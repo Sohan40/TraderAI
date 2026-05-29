@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     trading_mode: str = "OFF"
     live_armed: bool = False
+    kite_auth_enabled: bool = False
+    kite_api_key: str = ""
+    kite_api_secret: str = ""
+    kite_redirect_url: str = ""
+    kite_session_encryption_key: str = ""
+    operator_auth_token: str = ""
     app_host: str = Field(
         default="0.0.0.0",
         validation_alias=AliasChoices("API_HOST", "APP_HOST"),

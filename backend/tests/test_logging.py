@@ -34,3 +34,18 @@ def test_json_formatter_redacts_secret_assignments() -> None:
 
     assert payload["message"] == f"KITE_API_SECRET={REDACTED}"
     assert "abc123" not in payload["message"]
+
+
+def test_redact_secret_masks_p03_sensitive_names() -> None:
+    redacted = redact_secret(
+        {
+            "access_token": "access",
+            "request_token": "request",
+            "KITE_SESSION_ENCRYPTION_KEY": "key",
+            "OPERATOR_AUTH_TOKEN": "operator",
+            "X-Operator-Token": "header",
+            "checksum": "checksum-value",
+        }
+    )
+
+    assert set(redacted.values()) == {REDACTED}

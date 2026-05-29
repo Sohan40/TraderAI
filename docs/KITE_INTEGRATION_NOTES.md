@@ -10,6 +10,7 @@ This document is an implementation checklist, not a substitute for the current o
 - Never expose the API secret or session access token to the browser.
 - A session access token expires at 6 AM on the next day unless invalidated earlier.
 - Dashboard must show session status and refuse live arming without a valid session.
+- P03 implements authentication/session handling only; `KITE_AUTH_ENABLED=false` remains the default and no order or market-data functionality is present.
 
 ## Live data
 

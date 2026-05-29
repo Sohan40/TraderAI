@@ -11,7 +11,8 @@ from typing import Any
 
 SECRET_KEY_PATTERN = (
     r"(?:[a-z0-9]+[_-])*"
-    r"(?:api[_-]?key|api[_-]?secret|access[_-]?token|openai[_-]?api[_-]?key|password|secret|token)"
+    r"(?:api[_-]?key|api[_-]?secret|access[_-]?token|request[_-]?token|operator[_-]?auth[_-]?token|"
+    r"session[_-]?encryption[_-]?key|openai[_-]?api[_-]?key|password|secret|token|checksum)"
 )
 SECRET_PATTERN = re.compile(rf"(?i)\b({SECRET_KEY_PATTERN})\b")
 SECRET_ASSIGNMENT_PATTERN = re.compile(

@@ -9,10 +9,12 @@ def test_settings_default_to_non_live_mode() -> None:
     assert settings.live_armed is False
 
 
-def test_settings_do_not_model_external_credentials() -> None:
+def test_settings_keep_kite_auth_disabled_by_default() -> None:
     settings = Settings()
-    dumped = settings.model_dump()
 
-    assert "kite_api_key" not in dumped
-    assert "kite_api_secret" not in dumped
-    assert "openai_api_key" not in dumped
+    assert settings.kite_auth_enabled is False
+    assert settings.kite_api_key == ""
+    assert settings.kite_api_secret == ""
+    assert settings.kite_redirect_url == ""
+    assert settings.kite_session_encryption_key == ""
+    assert settings.operator_auth_token == ""

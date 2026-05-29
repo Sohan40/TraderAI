@@ -2,7 +2,7 @@
 
 from fastapi import FastAPI
 
-from app.api.routes import health
+from app.api.routes import health, kite_auth
 from app.core.config import settings
 from app.core.logging import configure_logging
 
@@ -10,3 +10,4 @@ configure_logging(settings.log_level)
 
 app = FastAPI(title="Zerodha AI Trader API")
 app.include_router(health.router)
+app.include_router(kite_auth.router)

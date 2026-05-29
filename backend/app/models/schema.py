@@ -55,6 +55,21 @@ trading_sessions = Table(
     Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
 )
 
+broker_sessions = Table(
+    "broker_sessions",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("broker", String(50), nullable=False),
+    Column("user_id", String(100), nullable=True),
+    Column("status", String(50), nullable=False),
+    Column("login_at", DateTime(timezone=True), nullable=True),
+    Column("expires_at", DateTime(timezone=True), nullable=False),
+    Column("encrypted_access_token", Text, nullable=False),
+    Column("invalidated_at", DateTime(timezone=True), nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+)
+
 instruments = Table(
     "instruments",
     metadata,
@@ -195,3 +210,4 @@ model_runs = Table(
 Index("ix_candles_instrument_timeframe_started", candles.c.instrument_id, candles.c.timeframe, candles.c.started_at)
 Index("ix_signals_instrument_signal_time", signals.c.instrument_id, signals.c.signal_time)
 Index("ix_journal_entries_created_at", journal_entries.c.created_at)
+Index("ix_broker_sessions_broker_created_at", broker_sessions.c.broker, broker_sessions.c.created_at)

@@ -93,6 +93,8 @@ A single small VM is sufficient for the first personal experiment. Docker Compos
 
 P02 deploys only the OFF-mode API, PostgreSQL and Redis services. The worker process, market-data ingestion, broker authentication, OpenAI calls and execution gateway remain future phases.
 
+P03 adds broker authentication/session handling only. The API can create a Kite login URL, validate callback state, persist encrypted access-token data and report non-sensitive session status. It does not add market data, scanning, order placement, risk approval or live-trading capability.
+
 ### Static-IP/execution isolation
 
 Only the Execution Gateway needs authority to call live order endpoints. In future, scanners or dashboards can move elsewhere, but live order outbound traffic remains on the VM with the registered static IP.

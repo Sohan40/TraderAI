@@ -10,7 +10,9 @@ requires-python = ">=3.11"
 dependencies = [
     "alembic",
     "asyncpg",
+    "cryptography",
     "fastapi",
+    "kiteconnect",
     "mypy",
     "pydantic-settings",
     "pytest",

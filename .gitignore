@@ -8,6 +8,7 @@ infra/gcp/env.prod
 *.secrets
 *secret*
 *token*
+!backend/app/broker/token_cipher.py
 *.key
 *.pem
 

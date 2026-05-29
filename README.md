@@ -75,8 +75,9 @@ Kite data is **not** a replacement for company-news or corporate-event research.
 
 - P01 backend bootstrap is implemented: FastAPI, PostgreSQL/Redis foundations, Alembic, health/readiness checks and tests.
 - P02 provides OFF-mode GCP VM deployment assets under `infra/gcp/`.
+- P03 adds Kite authentication/session handling only, guarded by operator-token protection and disabled by default.
 - Live trading remains disabled by default with `TRADING_MODE=OFF` and `LIVE_ARMED=false`.
-- Broker, market-data, OpenAI, scanner, risk-engine, execution and dashboard implementation phases have not started.
+- Market-data, OpenAI, scanner, risk-engine, execution and dashboard implementation phases have not started.
 
 ## Official documentation to verify while implementing
 
