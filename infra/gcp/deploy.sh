@@ -44,4 +44,4 @@ docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" run --rm \
   api alembic -c backend/alembic.ini upgrade head
 docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d api
 
-"${SCRIPT_DIR}/verify_deployment.sh"
+bash "${SCRIPT_DIR}/verify_deployment.sh"
