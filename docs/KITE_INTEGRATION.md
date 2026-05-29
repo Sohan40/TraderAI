@@ -61,7 +61,7 @@ P04 adds read-only market data only:
 - Instrument sync stores configured NSE watchlist instruments from Kite's daily instrument dump. The dump is reference data, not a live-price source.
 - Live quotes use Kite WebSocket streaming and default to `quote` mode.
 - Streaming requires an active, non-expired P03 Kite session. The backend decrypts the access token only internally to create the read-only data client.
-- Completed one-minute candles are stored from normalized ticks. The current in-progress candle is not flushed on stop or restart.
+- Completed one-minute UTC candles are stored from normalized ticks. Kite quote volume is cumulative for the trading day, so candle volume is derived by adding positive cross-tick cumulative-volume deltas into the current tick's minute bucket. The first partial minute after stream startup is deliberately discarded because no earlier cumulative-volume baseline exists. The current in-progress candle is not flushed on stop or restart.
 - Logout invalidates the Kite access token, so future sync or streaming attempts require reauthentication.
 
 All P04 flags remain disabled by default:

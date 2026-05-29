@@ -27,7 +27,7 @@ from app.market_data.exceptions import (
 )
 from app.market_data.instrument_sync import InstrumentSyncService
 from app.market_data.kite_market_client import KiteConnectMarketClient, KiteQuoteStream
-from app.market_data.schemas import CompletedCandle, InstrumentRecord
+from app.market_data.schemas import CompletedCandle, InstrumentRecord, NormalizedTick
 from app.market_data.watchlist import parse_watchlist
 from app.market_data.websocket_service import MarketDataStreamService
 
@@ -253,6 +253,19 @@ async def test_stream_start_refuses_when_market_data_disabled() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stream_start_refuses_when_kite_websocket_disabled() -> None:
+    service = MarketDataStreamService(
+        settings=market_settings(kite_websocket_enabled=False),
+        market_client=FakeMarketClient(),
+        repository=FakeRepository(),
+        session_provider=FakeSessionProvider(),
+    )
+
+    with pytest.raises(MarketDataDisabledError):
+        await service.start()
+
+
+@pytest.mark.asyncio
 async def test_stream_start_refuses_without_valid_authenticated_session() -> None:
     repository = FakeRepository()
     repository.instruments["NSE:NIFTYBEES"] = InstrumentRecord(1, "NSE", "NIFTYBEES", 111, Decimal("0.01"))
@@ -281,6 +294,21 @@ async def test_stream_start_refuses_when_session_is_expired() -> None:
     )
 
     with pytest.raises(MarketDataSessionError):
+        await service.start()
+
+
+@pytest.mark.asyncio
+async def test_stream_start_refuses_unresolved_watchlist_symbols() -> None:
+    repository = FakeRepository()
+    repository.instruments["NSE:NIFTYBEES"] = InstrumentRecord(1, "NSE", "NIFTYBEES", 111, Decimal("0.01"))
+    service = MarketDataStreamService(
+        settings=market_settings(),
+        market_client=FakeMarketClient(),
+        repository=repository,
+        session_provider=FakeSessionProvider(),
+    )
+
+    with pytest.raises(WatchlistError):
         await service.start()
 
 
@@ -352,6 +380,7 @@ async def test_normalized_ticks_create_completed_one_minute_candles() -> None:
 
     service.handle_ticks(
         [
+            {"instrument_token": 111, "last_price": "9.75", "volume": 80, "exchange_timestamp": datetime(2026, 5, 30, 9, 14, 59, tzinfo=timezone.utc)},
             {"instrument_token": 111, "last_price": "10.00", "volume": 100, "exchange_timestamp": datetime(2026, 5, 30, 9, 15, 1, tzinfo=timezone.utc)},
             {"instrument_token": 111, "last_price": "11.00", "volume": 120, "exchange_timestamp": datetime(2026, 5, 30, 9, 15, 20, tzinfo=timezone.utc)},
             {"instrument_token": 111, "last_price": "9.50", "volume": 90, "exchange_timestamp": datetime(2026, 5, 30, 9, 15, 10, tzinfo=timezone.utc)},
@@ -366,8 +395,66 @@ async def test_normalized_ticks_create_completed_one_minute_candles() -> None:
     assert candle.high_price == Decimal("11.00")
     assert candle.low_price == Decimal("10.00")
     assert candle.close_price == Decimal("11.00")
-    assert candle.volume == 120
+    assert candle.volume == 40
     assert candle.source == "KITE_WEBSOCKET"
+
+
+def test_cross_minute_cumulative_volume_uses_previous_tick_baseline() -> None:
+    builder = OneMinuteCandleBuilder()
+
+    assert builder.accept_tick(_tick("09:59:59", "99.00", 1000), instrument_id=1) == []
+    assert builder.accept_tick(_tick("10:00:08", "100.00", 1040), instrument_id=1) == []
+    assert builder.accept_tick(_tick("10:00:55", "101.00", 1090), instrument_id=1) == []
+    completed = builder.accept_tick(_tick("10:01:01", "102.00", 1100), instrument_id=1)
+
+    assert len(completed) == 1
+    assert completed[0].started_at == datetime(2026, 5, 30, 10, 0, tzinfo=timezone.utc)
+    assert completed[0].volume == 90
+
+
+def test_stream_start_partial_candle_is_not_persisted() -> None:
+    builder = OneMinuteCandleBuilder()
+
+    assert builder.accept_tick(_tick("09:15:01", "10.00", 100), instrument_id=1) == []
+    assert builder.accept_tick(_tick("09:15:20", "11.00", 120), instrument_id=1) == []
+    assert builder.accept_tick(_tick("09:16:01", "12.00", 150), instrument_id=1) == []
+
+
+def test_exact_duplicate_ticks_do_not_double_count_volume() -> None:
+    builder = OneMinuteCandleBuilder()
+
+    builder.accept_tick(_tick("09:59:59", "99.00", 1000), instrument_id=1)
+    builder.accept_tick(_tick("10:00:08", "100.00", 1040), instrument_id=1)
+    builder.accept_tick(_tick("10:00:08", "100.00", 1040), instrument_id=1)
+    builder.accept_tick(_tick("10:00:55", "101.00", 1090), instrument_id=1)
+    completed = builder.accept_tick(_tick("10:01:01", "102.00", 1100), instrument_id=1)
+
+    assert completed[0].volume == 90
+
+
+def test_same_timestamp_higher_cumulative_volume_counts_increment_once() -> None:
+    builder = OneMinuteCandleBuilder()
+
+    builder.accept_tick(_tick("09:59:59", "99.00", 1000), instrument_id=1)
+    builder.accept_tick(_tick("10:00:08", "100.00", 1040), instrument_id=1)
+    builder.accept_tick(_tick("10:00:08", "100.50", 1090), instrument_id=1)
+    builder.accept_tick(_tick("10:00:08", "100.50", 1090), instrument_id=1)
+    completed = builder.accept_tick(_tick("10:01:01", "102.00", 1100), instrument_id=1)
+
+    assert completed[0].high_price == Decimal("100.50")
+    assert completed[0].close_price == Decimal("100.50")
+    assert completed[0].volume == 90
+
+
+def test_cumulative_volume_decrease_discards_affected_candle() -> None:
+    builder = OneMinuteCandleBuilder()
+
+    builder.accept_tick(_tick("09:59:59", "99.00", 1000), instrument_id=1)
+    builder.accept_tick(_tick("10:00:08", "100.00", 1040), instrument_id=1)
+    builder.accept_tick(_tick("10:00:55", "101.00", 1030), instrument_id=1)
+    completed = builder.accept_tick(_tick("10:01:01", "102.00", 1040), instrument_id=1)
+
+    assert completed == []
 
 
 def test_stream_status_returns_no_secret_values() -> None:
@@ -446,6 +533,30 @@ async def test_encrypted_p03_session_provider_decrypts_only_internally() -> None
     assert session.access_token == "plain-access-token"
 
 
+@pytest.mark.asyncio
+async def test_invalidated_p03_session_prevents_market_data_startup() -> None:
+    key = TokenCipher.generate_key()
+    cipher = TokenCipher(key)
+    record = BrokerSessionRecord(
+        id=1,
+        broker=BROKER_ZERODHA,
+        user_id="AB1234",
+        status=STATUS_ACTIVE,
+        login_at=datetime.now(timezone.utc),
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        encrypted_access_token=cipher.encrypt("plain-access-token"),
+        invalidated_at=datetime.now(timezone.utc),
+    )
+    provider = KiteAccessSessionProvider(
+        settings=market_settings(kite_session_encryption_key=key),
+        session_store=FakeBrokerSessionStore(record),
+        token_cipher=cipher,
+    )
+
+    with pytest.raises(KiteSessionError):
+        await provider.get_active_session()
+
+
 def test_market_data_wrapper_exposes_no_execution_methods() -> None:
     forbidden_fragments = ("order", "position", "holding", "margin", "gtt")
     public_methods = {
@@ -462,3 +573,13 @@ def test_market_data_wrapper_exposes_no_execution_methods() -> None:
         "disconnect",
     }
     assert not any(fragment in method for fragment in forbidden_fragments for method in public_methods)
+
+
+def _tick(time_text: str, price: str, volume: int) -> NormalizedTick:
+    hour, minute, second = (int(part) for part in time_text.split(":"))
+    return NormalizedTick(
+        instrument_token=111,
+        last_price=Decimal(price),
+        volume=volume,
+        exchange_timestamp=datetime(2026, 5, 30, hour, minute, second, tzinfo=timezone.utc),
+    )
