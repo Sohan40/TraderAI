@@ -95,6 +95,8 @@ P02 deploys only the OFF-mode API, PostgreSQL and Redis services. The worker pro
 
 P03 adds broker authentication/session handling only. The API can create a Kite login URL, validate callback state, persist encrypted access-token data and report non-sensitive session status. It does not add market data, scanning, order placement, risk approval or live-trading capability.
 
+P04 adds read-only market-data ingestion controls only. Instrument sync uses the daily Kite instrument dump as reference data, quote streaming is operator-started and disabled by default, and completed one-minute candles are stored from normalized ticks. The worker process, scanners, indicators, OpenAI calls, risk approval and execution gateway remain future phases.
+
 ### Static-IP/execution isolation
 
 Only the Execution Gateway needs authority to call live order endpoints. In future, scanners or dashboards can move elsewhere, but live order outbound traffic remains on the VM with the registered static IP.

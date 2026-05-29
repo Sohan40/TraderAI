@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from sqlalchemy import desc, insert, select, update
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.schema import broker_sessions
 
@@ -132,6 +132,39 @@ class SQLAlchemySessionStore:
             )
         )
         await self._session.commit()
+
+
+class SessionFactorySessionStore:
+    """Session store that opens a fresh AsyncSession for each operation."""
+
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def save_authenticated_session(
+        self,
+        *,
+        broker: str,
+        user_id: str | None,
+        encrypted_access_token: str,
+        login_at: datetime,
+        expires_at: datetime,
+    ) -> BrokerSessionRecord:
+        async with self._session_factory() as session:
+            return await SQLAlchemySessionStore(session).save_authenticated_session(
+                broker=broker,
+                user_id=user_id,
+                encrypted_access_token=encrypted_access_token,
+                login_at=login_at,
+                expires_at=expires_at,
+            )
+
+    async def get_latest_session(self, broker: str = BROKER_ZERODHA) -> BrokerSessionRecord | None:
+        async with self._session_factory() as session:
+            return await SQLAlchemySessionStore(session).get_latest_session(broker)
+
+    async def mark_invalidated(self, session_id: int, status: str = STATUS_LOGGED_OUT) -> None:
+        async with self._session_factory() as session:
+            await SQLAlchemySessionStore(session).mark_invalidated(session_id, status)
 
 
 def _record_from_mapping(row: Any) -> BrokerSessionRecord:

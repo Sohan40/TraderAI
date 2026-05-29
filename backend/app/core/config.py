@@ -23,6 +23,14 @@ class Settings(BaseSettings):
     kite_redirect_url: str = ""
     kite_session_encryption_key: str = ""
     operator_auth_token: str = ""
+    market_data_enabled: bool = False
+    instrument_sync_enabled: bool = False
+    kite_websocket_enabled: bool = False
+    market_data_watchlist: str = "NSE:NIFTYBEES,NSE:SBIN"
+    market_data_mode: str = "quote"
+    market_data_max_instruments: int = 10
+    market_data_stale_after_seconds: int = 10
+    market_data_candle_interval: str = "1minute"
     app_host: str = Field(
         default="0.0.0.0",
         validation_alias=AliasChoices("API_HOST", "APP_HOST"),

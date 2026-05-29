@@ -1,7 +1,7 @@
 # Market Data Module
 
-Purpose: reserve the boundary for future Kite market data ingestion, streaming health, and candle feeds.
+Purpose: read-only Kite instrument sync, configured watchlist resolution, quote-stream lifecycle state, tick normalization, and completed one-minute candle storage for P04.
 
-Implementation belongs to `docs/plans/P04_MARKET_DATA_PIPELINE.md`.
+This module must remain separate from execution. It has no order, position, holdings, GTT, scanner, OpenAI, or live-trading functionality.
 
-No live trading functionality exists in this module yet.
+All ingestion flags default to disabled and require an active encrypted P03 Kite session before any real stream can be started.

@@ -98,6 +98,7 @@ candles = Table(
     Column("low_price", Numeric(18, 6), nullable=False),
     Column("close_price", Numeric(18, 6), nullable=False),
     Column("volume", Integer, nullable=False, server_default="0"),
+    Column("source", String(50), nullable=False, server_default="KITE_WEBSOCKET"),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     UniqueConstraint("instrument_id", "timeframe", "started_at", name="uq_candles_identity"),
 )

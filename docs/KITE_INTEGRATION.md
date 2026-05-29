@@ -53,3 +53,23 @@ Actual Kite credentials and encryption keys must be provided only through secure
 ## Deployment Note
 
 Real Kite login testing needs a registered redirect URL that Zerodha can reach securely. The P02 VM API currently binds to `127.0.0.1` for safe health checks; do not simply open it publicly. Add HTTPS, reverse proxy and suitable access control before exposing the callback externally.
+
+## P04 Market Data Scope
+
+P04 adds read-only market data only:
+
+- Instrument sync stores configured NSE watchlist instruments from Kite's daily instrument dump. The dump is reference data, not a live-price source.
+- Live quotes use Kite WebSocket streaming and default to `quote` mode.
+- Streaming requires an active, non-expired P03 Kite session. The backend decrypts the access token only internally to create the read-only data client.
+- Completed one-minute candles are stored from normalized ticks. The current in-progress candle is not flushed on stop or restart.
+- Logout invalidates the Kite access token, so future sync or streaming attempts require reauthentication.
+
+All P04 flags remain disabled by default:
+
+```env
+MARKET_DATA_ENABLED=false
+INSTRUMENT_SYNC_ENABLED=false
+KITE_WEBSOCKET_ENABLED=false
+```
+
+Caddy and public HTTPS exposure remain callback-focused in this phase. Do not expose operator market-data controls publicly without later dashboard authentication and reverse-proxy hardening.

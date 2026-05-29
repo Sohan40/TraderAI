@@ -20,6 +20,7 @@ This document is an implementation checklist, not a substitute for the current o
 - Store only completed bars initially; do not create a high-volume tick lake in MVP.
 - Persist data-health heartbeats.
 - Start with five to ten allowlisted liquid instruments; expand only after stability.
+- P04 implements read-only instrument sync and WebSocket quote-stream controls behind disabled-by-default flags. It does not implement indicators, scanners, portfolio data, orders or execution.
 
 ## Order handling
 
