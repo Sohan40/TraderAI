@@ -35,7 +35,16 @@ BASE_URL="${BASE_URL:-http://127.0.0.1:${APP_PORT}}"
 
 command -v curl >/dev/null 2>&1 || fail "curl is required for deployment verification."
 
-health_response="$(curl --fail --silent --show-error "${BASE_URL}/healthz")" || fail "/healthz request failed."
+health_response=""
+for attempt in $(seq 1 20); do
+  if health_response="$(curl --fail --silent --show-error "${BASE_URL}/healthz" 2>/dev/null)"; then
+    break
+  fi
+  printf 'Waiting for /healthz (%s/20)...\n' "${attempt}"
+  sleep 2
+done
+
+[ -n "${health_response}" ] || fail "/healthz request failed after 40 seconds."
 printf '%s' "${health_response}" | grep -q '"status":"healthy"' || fail "/healthz did not report healthy."
 pass "/healthz is healthy"
 
