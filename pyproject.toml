@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zerodha-ai-trader"
+version = "0.1.0"
+description = "Scaffold for a safe Zerodha AI Trader experiment."
+requires-python = ">=3.11"
+dependencies = [
+    "alembic",
+    "asyncpg",
+    "fastapi",
+    "mypy",
+    "pydantic-settings",
+    "pytest",
+    "pytest-asyncio",
+    "httpx",
+    "redis",
+    "ruff",
+    "sqlalchemy[asyncio]",
+    "uvicorn[standard]",
+]
+
+[tool.setuptools.packages.find]
+where = ["backend"]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+pythonpath = ["backend"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["backend"]
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "backend"
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true

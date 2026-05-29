@@ -1,0 +1,36 @@
+# Starter Google Cloud Ops Agent configuration for the P02 VM.
+#
+# This file contains no secrets. Review and adapt it on the VM before copying to:
+#   /etc/google-cloud-ops-agent/config.yaml
+#
+# Docker's json-file log paths can vary by host and daemon configuration. If the
+# paths below do not exist on the VM, use Cloud Logging's default Ops Agent
+# system logs plus `docker compose logs`, or adjust receivers after inspection.
+
+logging:
+  receivers:
+    docker_json:
+      type: files
+      include_paths:
+        - /var/lib/docker/containers/*/*.log
+  processors:
+    parse_docker_json:
+      type: parse_json
+      field: message
+      time_key: time
+      time_format: "%Y-%m-%dT%H:%M:%S.%LZ"
+  service:
+    pipelines:
+      docker_logs:
+        receivers: [docker_json]
+        processors: [parse_docker_json]
+
+metrics:
+  receivers:
+    hostmetrics:
+      type: hostmetrics
+      collection_interval: 60s
+  service:
+    pipelines:
+      host_metrics:
+        receivers: [hostmetrics]

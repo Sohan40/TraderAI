@@ -1,0 +1,40 @@
+"""Safe runtime configuration defaults."""
+
+from functools import lru_cache
+
+from pydantic import AliasChoices, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    """Application settings with safe non-live defaults.
+
+    Broker and OpenAI credentials are intentionally not modeled in P01.
+    """
+
+    app_env: str = "development"
+    app_timezone: str = "Asia/Kolkata"
+    log_level: str = "INFO"
+    trading_mode: str = "OFF"
+    live_armed: bool = False
+    app_host: str = Field(
+        default="0.0.0.0",
+        validation_alias=AliasChoices("API_HOST", "APP_HOST"),
+    )
+    app_port: int = Field(
+        default=8000,
+        validation_alias=AliasChoices("API_PORT", "APP_PORT"),
+    )
+    database_url: str = "postgresql+asyncpg://trader:change-me@postgres:5432/trader"
+    redis_url: str = "redis://:change-me@redis:6379/0"
+
+    model_config = SettingsConfigDict(case_sensitive=False, env_file=None, extra="ignore")
+
+
+@lru_cache
+def get_settings() -> Settings:
+    """Return cached settings for application use."""
+    return Settings()
+
+
+settings = get_settings()

@@ -1,0 +1,1 @@
+"""Future indicator calculation boundary."""

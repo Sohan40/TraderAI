@@ -1,0 +1,1 @@
+"""Future trading journal boundary."""
