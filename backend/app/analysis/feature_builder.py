@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from app.analysis.indicators import (
     atr_wilder,
@@ -112,6 +112,16 @@ def build_feature_snapshot(
             feature_input.current_session_bars,
             timeframe=timeframe,
         ),
+        session_start_available=_session_start_available(feature_input.current_session_bars),
+        opening_range_complete=_opening_range_complete(
+            feature_input.current_session_bars,
+            opening_range_minutes=opening_range_minutes,
+            timeframe=timeframe,
+        ),
+        current_session_complete_through_latest=_current_session_complete_through_latest(
+            feature_input.current_session_bars,
+            timeframe=timeframe,
+        ),
     )
     return FeatureSnapshot(
         symbol=symbol,
@@ -163,3 +173,49 @@ def _session_date(bar: CompletedBar) -> date:
 
 def _is_regular_session_bar(bar: CompletedBar) -> bool:
     return bar.started_at.astimezone(IST).time() >= NSE_OPEN
+
+
+def _session_start_available(bars: list[CompletedBar]) -> bool:
+    return bool(bars) and bars[0].started_at.astimezone(IST).time() == NSE_OPEN
+
+
+def _opening_range_complete(
+    bars: list[CompletedBar],
+    *,
+    opening_range_minutes: int,
+    timeframe: str,
+) -> bool:
+    if timeframe != "1minute" or opening_range_minutes < 1:
+        return False
+    return _has_continuous_current_session_prefix(
+        bars,
+        required_minutes=opening_range_minutes,
+    )
+
+
+def _current_session_complete_through_latest(
+    bars: list[CompletedBar],
+    *,
+    timeframe: str,
+) -> bool:
+    if timeframe != "1minute" or not bars:
+        return False
+    return _has_continuous_current_session_prefix(
+        bars,
+        required_minutes=len(bars),
+    )
+
+
+def _has_continuous_current_session_prefix(
+    bars: list[CompletedBar],
+    *,
+    required_minutes: int,
+) -> bool:
+    if len(bars) < required_minutes or not _session_start_available(bars):
+        return False
+    expected = bars[0].started_at
+    for bar in bars[:required_minutes]:
+        if bar.started_at != expected:
+            return False
+        expected += timedelta(minutes=1)
+    return True

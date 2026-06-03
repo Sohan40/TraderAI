@@ -99,6 +99,8 @@ P04 adds read-only market-data ingestion controls only. Instrument sync uses the
 
 P05 adds deterministic indicators and scanner observations over completed stored candles only. The scanner is disabled by default, runs only when explicitly operator-triggered or through replay, persists immutable `CANDIDATE`/`REJECTED_SIGNAL` records with veto reasons, and has no order, paper-fill, OpenAI, Kronos, MCP or broker-call authority.
 
+P05 session-based strategies require complete stored current-session context from the NSE 09:15 IST open. VWAP pullback candidates require continuous one-minute candles from 09:15 through the evaluated bar, and opening-range breakout candidates require the configured opening-range window from 09:15 to be complete. Until historical backfill exists, late-start streams generate data-quality rejections rather than partial-session candidates.
+
 ### Static-IP/execution isolation
 
 Only the Execution Gateway needs authority to call live order endpoints. In future, scanners or dashboards can move elsewhere, but live order outbound traffic remains on the VM with the registered static IP.

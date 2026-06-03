@@ -22,3 +22,10 @@ P05 scanner feature input is split by scope before calculation:
 - opening range and VWAP use only regular current IST session bars starting at or after 09:15 IST;
 - previous-day high/low uses the most recent prior IST date with available regular-session bars;
 - continuity checks reject gaps inside the regular current IST session while allowing expected overnight or pre-open-to-open gaps.
+
+Session-based scanner candidates require explicit current-session context:
+
+- VWAP pullback evaluation requires stored regular-session candles to begin at 09:15 IST and remain continuous through the evaluated latest bar;
+- opening-range breakout evaluation requires the full configured opening-range window from 09:15 IST to be present continuously before a candidate can be emitted;
+- pre-open candles are excluded and never satisfy session-start availability;
+- until historical backfill exists, a scanner started late in the day emits audited data-quality rejections instead of candidates based on partial-session VWAP or opening range.

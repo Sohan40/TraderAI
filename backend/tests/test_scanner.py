@@ -23,6 +23,7 @@ from app.scanners.service import ScannerService, scanner_config_from_settings
 from app.scanners.strategies import evaluate_strategy
 from app.scanners.vetoes import (
     DATA_QUALITY_FAILURE,
+    INCOMPLETE_SESSION_CONTEXT,
     SPREAD_TOO_WIDE,
     SPREAD_UNAVAILABLE_WHEN_REQUIRED,
     STALE_QUOTE_OR_DATA,
@@ -289,6 +290,146 @@ def test_opening_range_breakout_candidate_only_when_conditions_pass() -> None:
 
     assert evaluation.status == CANDIDATE
     assert evaluation.veto_reasons == []
+    data_quality = cast(dict[str, bool], evaluation.snapshot.as_dict()["data_quality"])
+    assert data_quality["session_start_available"] is True
+    assert data_quality["opening_range_complete"] is True
+    assert data_quality["current_session_complete_through_latest"] is True
+
+
+def test_vwap_pullback_rejects_partial_current_session_context() -> None:
+    bars = _bars(
+        count=51,
+        start=datetime(2026, 6, 3, 6, 30, tzinfo=timezone.utc),
+        price=100,
+        volume=100,
+    )
+    bars[-2] = _bar(
+        49,
+        start=datetime(2026, 6, 3, 6, 30, tzinfo=timezone.utc),
+        close=Decimal("99"),
+        high=Decimal("100"),
+        volume=100,
+    )
+    bars[-1] = _bar(
+        50,
+        start=datetime(2026, 6, 3, 6, 30, tzinfo=timezone.utc),
+        close=Decimal("102"),
+        high=Decimal("103"),
+        volume=220,
+    )
+    config = scanner_config_from_settings(
+        Settings(scanner_enabled=True, scanner_require_spread_for_future_live=False)
+    )
+
+    evaluation = evaluate_strategy(
+        strategy_name="vwap_pullback_continuation_long",
+        instrument_id=1,
+        symbol="NSE:SBIN",
+        timeframe="1minute",
+        bars=bars,
+        config=config,
+    )
+
+    data_quality = cast(dict[str, bool], evaluation.snapshot.as_dict()["data_quality"])
+    assert evaluation.status == REJECTED_SIGNAL
+    assert INCOMPLETE_SESSION_CONTEXT in evaluation.veto_reasons
+    assert data_quality["session_start_available"] is False
+    assert data_quality["current_session_complete_through_latest"] is False
+
+
+def test_vwap_pullback_complete_current_session_can_still_candidate() -> None:
+    bars = _candidate_bars()
+    bars[-2] = _bar(49, close=Decimal("99"), high=Decimal("100"), volume=100)
+    bars[-1] = _bar(50, close=Decimal("102"), high=Decimal("103"), volume=220)
+    config = scanner_config_from_settings(
+        Settings(scanner_enabled=True, scanner_require_spread_for_future_live=False)
+    )
+
+    evaluation = evaluate_strategy(
+        strategy_name="vwap_pullback_continuation_long",
+        instrument_id=1,
+        symbol="NSE:SBIN",
+        timeframe="1minute",
+        bars=bars,
+        config=config,
+    )
+
+    data_quality = cast(dict[str, bool], evaluation.snapshot.as_dict()["data_quality"])
+    assert evaluation.status == CANDIDATE
+    assert INCOMPLETE_SESSION_CONTEXT not in evaluation.veto_reasons
+    assert data_quality["current_session_complete_through_latest"] is True
+
+
+def test_opening_range_breakout_rejects_missing_session_open_bar() -> None:
+    bars = _bars(count=51, start=datetime(2026, 6, 3, 3, 46, tzinfo=timezone.utc))
+    bars[-1] = _bar(
+        50,
+        start=datetime(2026, 6, 3, 3, 46, tzinfo=timezone.utc),
+        close=Decimal("120"),
+        high=Decimal("121"),
+        low=Decimal("119"),
+        volume=220,
+    )
+    config = scanner_config_from_settings(
+        Settings(scanner_enabled=True, scanner_require_spread_for_future_live=False)
+    )
+
+    evaluation = evaluate_strategy(
+        strategy_name="opening_range_breakout_long",
+        instrument_id=1,
+        symbol="NSE:SBIN",
+        timeframe="1minute",
+        bars=bars,
+        config=config,
+    )
+
+    data_quality = cast(dict[str, bool], evaluation.snapshot.as_dict()["data_quality"])
+    assert evaluation.status == REJECTED_SIGNAL
+    assert INCOMPLETE_SESSION_CONTEXT in evaluation.veto_reasons
+    assert data_quality["session_start_available"] is False
+    assert data_quality["opening_range_complete"] is False
+
+
+def test_missing_bar_inside_current_session_rejects_session_context() -> None:
+    bars = _candidate_bars()
+    del bars[10]
+    config = scanner_config_from_settings(
+        Settings(scanner_enabled=True, scanner_require_spread_for_future_live=False)
+    )
+
+    evaluation = evaluate_strategy(
+        strategy_name="vwap_pullback_continuation_long",
+        instrument_id=1,
+        symbol="NSE:SBIN",
+        timeframe="1minute",
+        bars=bars,
+        config=config,
+    )
+
+    data_quality = cast(dict[str, bool], evaluation.snapshot.as_dict()["data_quality"])
+    assert evaluation.status == REJECTED_SIGNAL
+    assert DATA_QUALITY_FAILURE in evaluation.veto_reasons
+    assert INCOMPLETE_SESSION_CONTEXT in evaluation.veto_reasons
+    assert data_quality["candle_continuity_ok"] is False
+    assert data_quality["current_session_complete_through_latest"] is False
+
+
+def test_pre_open_bar_does_not_satisfy_session_start_availability() -> None:
+    pre_open = _bar(0, start=datetime(2026, 6, 3, 3, 38, tzinfo=timezone.utc))
+    late_regular = _bars(count=51, start=datetime(2026, 6, 3, 6, 30, tzinfo=timezone.utc))
+
+    snapshot = build_feature_snapshot(
+        symbol="NSE:SBIN",
+        timeframe="1minute",
+        bars=[pre_open] + late_regular,
+        strategy_name="vwap_pullback_continuation_long",
+        signal_status=REJECTED_SIGNAL,
+        veto_reasons=[INCOMPLETE_SESSION_CONTEXT],
+    )
+
+    data_quality = cast(dict[str, bool], snapshot.as_dict()["data_quality"])
+    assert data_quality["session_start_available"] is False
+    assert data_quality["current_session_complete_through_latest"] is False
 
 
 def test_shadow_candidate_is_not_rejected_when_future_live_spread_is_missing() -> None:

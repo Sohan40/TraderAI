@@ -71,6 +71,9 @@ class DataQuality:
     quote_fresh: bool
     spread_available: bool
     candle_continuity_ok: bool
+    session_start_available: bool
+    opening_range_complete: bool
+    current_session_complete_through_latest: bool
 
     def as_dict(self) -> dict[str, bool]:
         return {
@@ -78,6 +81,11 @@ class DataQuality:
             "quote_fresh": self.quote_fresh,
             "spread_available": self.spread_available,
             "candle_continuity_ok": self.candle_continuity_ok,
+            "session_start_available": self.session_start_available,
+            "opening_range_complete": self.opening_range_complete,
+            "current_session_complete_through_latest": (
+                self.current_session_complete_through_latest
+            ),
         }
 
 

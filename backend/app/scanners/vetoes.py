@@ -21,6 +21,7 @@ DATA_QUALITY_FAILURE = "data_quality_failure"
 BENCHMARK_DATA_MISSING_WHEN_REQUIRED = "benchmark_data_missing_when_required"
 INVALID_INDICATOR_STATE = "invalid_indicator_state"
 DUPLICATE_SIGNAL = "duplicate_signal"
+INCOMPLETE_SESSION_CONTEXT = "incomplete_session_context"
 
 
 def hard_vetoes(
@@ -41,6 +42,12 @@ def hard_vetoes(
         reasons.append(MISSING_HISTORY)
     if not data_quality.candle_continuity_ok:
         reasons.append(DATA_QUALITY_FAILURE)
+    if strategy_name == "vwap_pullback_continuation_long":
+        if not data_quality.current_session_complete_through_latest:
+            reasons.append(INCOMPLETE_SESSION_CONTEXT)
+    if strategy_name == "opening_range_breakout_long":
+        if not data_quality.opening_range_complete:
+            reasons.append(INCOMPLETE_SESSION_CONTEXT)
     if is_stale:
         reasons.append(STALE_QUOTE_OR_DATA)
     if bars and bars[-1].started_at.astimezone(IST).time() > ENTRY_END:
