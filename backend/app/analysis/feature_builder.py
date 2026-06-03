@@ -9,6 +9,7 @@ from app.analysis.indicators import (
     candle_continuity_ok,
     ema,
     IST,
+    NSE_OPEN,
     opening_range,
     previous_day_high_low,
     relative_index_movement,
@@ -129,6 +130,7 @@ def build_feature_snapshot(
 def build_feature_input(bars: list[CompletedBar]) -> FeatureInput:
     """Split loaded candles into deterministic scanner feature scopes."""
     ordered = sorted(bars, key=lambda bar: bar.started_at)
+    regular_bars = [bar for bar in ordered if _is_regular_session_bar(bar)]
     if not ordered:
         return FeatureInput(
             all_bars=[],
@@ -138,18 +140,18 @@ def build_feature_input(bars: list[CompletedBar]) -> FeatureInput:
         )
     current_session_date = _session_date(ordered[-1])
     prior_dates = sorted(
-        {_session_date(bar) for bar in ordered if _session_date(bar) < current_session_date}
+        {_session_date(bar) for bar in regular_bars if _session_date(bar) < current_session_date}
     )
     prior_session_date = prior_dates[-1] if prior_dates else None
     return FeatureInput(
         all_bars=ordered,
-        trailing_bars=ordered,
+        trailing_bars=regular_bars,
         current_session_bars=[
-            bar for bar in ordered if _session_date(bar) == current_session_date
+            bar for bar in regular_bars if _session_date(bar) == current_session_date
         ],
         prior_session_bars=[
             bar
-            for bar in ordered
+            for bar in regular_bars
             if prior_session_date is not None and _session_date(bar) == prior_session_date
         ],
     )
@@ -157,3 +159,7 @@ def build_feature_input(bars: list[CompletedBar]) -> FeatureInput:
 
 def _session_date(bar: CompletedBar) -> date:
     return bar.started_at.astimezone(IST).date()
+
+
+def _is_regular_session_bar(bar: CompletedBar) -> bool:
+    return bar.started_at.astimezone(IST).time() >= NSE_OPEN

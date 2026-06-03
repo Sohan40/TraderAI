@@ -119,12 +119,11 @@ class ScannerService:
             return False
         latest = bars[-1]
         bar_end = latest.started_at + timedelta(minutes=1)
+        stale_after = bar_end + timedelta(minutes=1, seconds=self._config.stale_after_seconds)
         now = self._now_provider()
         if now.tzinfo is None:
             now = now.replace(tzinfo=timezone.utc)
-        return now.astimezone(timezone.utc) - bar_end.astimezone(timezone.utc) > timedelta(
-            seconds=self._config.stale_after_seconds
-        )
+        return now.astimezone(timezone.utc) > stale_after.astimezone(timezone.utc)
 
     def _validate_timeframe(self, timeframe: str) -> None:
         if timeframe != SCANNER_TIMEFRAME:

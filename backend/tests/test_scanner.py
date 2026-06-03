@@ -8,7 +8,7 @@ from typing import cast
 import pytest
 from fastapi.testclient import TestClient
 
-from app.analysis.feature_builder import build_indicator_snapshot
+from app.analysis.feature_builder import build_feature_snapshot, build_indicator_snapshot
 from app.analysis.indicators import atr_wilder, candle_continuity_ok, ema, rsi_wilder, spread_pct, vwap
 from app.analysis.schemas import CompletedBar, QuoteContext
 from app.api import dependencies
@@ -136,6 +136,84 @@ def test_vwap_uses_current_session_and_includes_candles_older_than_latest_51() -
 
     assert snapshot.vwap == vwap(current_session)
     assert snapshot.vwap != vwap((prior_session + current_session)[-51:])
+
+
+def test_current_session_vwap_excludes_pre_open_bar() -> None:
+    pre_open = _bar(
+        0,
+        start=datetime(2026, 6, 3, 3, 38, tzinfo=timezone.utc),
+        close=Decimal("1000"),
+        high=Decimal("1001"),
+        low=Decimal("999"),
+        volume=10000,
+    )
+    regular = _bars(count=30, start=datetime(2026, 6, 3, 3, 45, tzinfo=timezone.utc), price=100)
+
+    snapshot = build_indicator_snapshot([pre_open] + regular)
+
+    assert snapshot.vwap == vwap(regular)
+
+
+def test_pre_open_bar_does_not_create_false_current_session_continuity_failure() -> None:
+    pre_open = _bar(0, start=datetime(2026, 6, 3, 3, 38, tzinfo=timezone.utc))
+
+    snapshot = build_feature_snapshot(
+        symbol="NSE:SBIN",
+        timeframe="1minute",
+        bars=[pre_open] + _candidate_bars(),
+        strategy_name="opening_range_breakout_long",
+        signal_status=CANDIDATE,
+        veto_reasons=[],
+    )
+
+    assert snapshot.data_quality.candle_continuity_ok is True
+
+
+def test_opening_range_excludes_pre_open_and_after_range_bars() -> None:
+    pre_open = _bar(
+        0,
+        start=datetime(2026, 6, 3, 3, 38, tzinfo=timezone.utc),
+        close=Decimal("999"),
+        high=Decimal("999"),
+        low=Decimal("998"),
+    )
+    regular = _bars(count=20, start=datetime(2026, 6, 3, 3, 45, tzinfo=timezone.utc), price=100)
+    regular[15] = _bar(
+        15,
+        start=datetime(2026, 6, 3, 3, 45, tzinfo=timezone.utc),
+        close=Decimal("500"),
+        high=Decimal("500"),
+        low=Decimal("499"),
+    )
+
+    snapshot = build_indicator_snapshot([pre_open] + regular)
+
+    assert snapshot.opening_range_high == Decimal("102")
+    assert snapshot.opening_range_low == Decimal("99")
+
+
+def test_previous_day_high_low_ignores_prior_date_pre_open_outlier() -> None:
+    prior_pre_open = _bar(
+        0,
+        start=datetime(2026, 6, 2, 3, 30, tzinfo=timezone.utc),
+        close=Decimal("999"),
+        high=Decimal("999"),
+        low=Decimal("998"),
+    )
+    prior_regular = _bars(count=30, start=datetime(2026, 6, 2, 3, 45, tzinfo=timezone.utc))
+    prior_regular[10] = _bar(
+        10,
+        start=datetime(2026, 6, 2, 3, 45, tzinfo=timezone.utc),
+        close=Decimal("149"),
+        high=Decimal("150"),
+        low=Decimal("148"),
+    )
+    current_regular = _bars(count=30, start=datetime(2026, 6, 3, 3, 45, tzinfo=timezone.utc))
+
+    snapshot = build_indicator_snapshot([prior_pre_open] + prior_regular + current_regular)
+
+    assert snapshot.previous_day_high == Decimal("150")
+    assert snapshot.previous_day_low == Decimal("99")
 
 
 @pytest.mark.asyncio
@@ -409,6 +487,60 @@ async def test_live_scanner_run_persists_stale_data_veto() -> None:
     assert all(
         STALE_QUOTE_OR_DATA in cast(list[str], signal["veto_reasons"]) for signal in signals
     )
+
+
+@pytest.mark.asyncio
+async def test_latest_completed_bar_is_fresh_during_next_in_progress_minute() -> None:
+    bars = _candidate_bars()
+    bar_end = bars[-1].started_at + timedelta(minutes=1)
+    repository = InMemoryScannerRepository({"NSE:SBIN": bars})
+    service = ScannerService(
+        settings=Settings(scanner_enabled=True, scanner_require_spread_for_future_live=False),
+        repository=repository,
+        now_provider=lambda: bar_end + timedelta(seconds=25),
+    )
+
+    await service.run_once(symbol="NSE:SBIN")
+
+    signals = await service.list_signals()
+    assert all(
+        STALE_QUOTE_OR_DATA not in cast(list[str], signal["veto_reasons"]) for signal in signals
+    )
+
+
+@pytest.mark.asyncio
+async def test_latest_completed_bar_is_fresh_during_post_boundary_grace() -> None:
+    bars = _candidate_bars()
+    bar_end = bars[-1].started_at + timedelta(minutes=1)
+    repository = InMemoryScannerRepository({"NSE:SBIN": bars})
+    service = ScannerService(
+        settings=Settings(scanner_enabled=True, scanner_require_spread_for_future_live=False),
+        repository=repository,
+        now_provider=lambda: bar_end + timedelta(minutes=1, seconds=5),
+    )
+
+    await service.run_once(symbol="NSE:SBIN")
+
+    signals = await service.list_signals()
+    assert all(
+        STALE_QUOTE_OR_DATA not in cast(list[str], signal["veto_reasons"]) for signal in signals
+    )
+
+
+@pytest.mark.asyncio
+async def test_latest_completed_bar_is_stale_after_next_minute_and_grace() -> None:
+    bars = _candidate_bars()
+    bar_end = bars[-1].started_at + timedelta(minutes=1)
+    repository = InMemoryScannerRepository({"NSE:SBIN": bars})
+    service = ScannerService(
+        settings=Settings(scanner_enabled=True, scanner_require_spread_for_future_live=False),
+        repository=repository,
+        now_provider=lambda: bar_end + timedelta(minutes=1, seconds=11),
+    )
+
+    result = await service.run_once(symbol="NSE:SBIN")
+
+    assert result.veto_counts[STALE_QUOTE_OR_DATA] == 2
 
 
 @pytest.mark.asyncio
