@@ -120,6 +120,12 @@ class OneMinuteCandleBuilder:
                 del self._working[token]
         return completed
 
+    def invalidate_after_stream_gap(self) -> None:
+        """Discard in-progress candles and reset cumulative-volume baselines after a gap."""
+        self._working.clear()
+        self._last_tick_at.clear()
+        self._last_cumulative_volume.clear()
+
     def _roll_to_minute(self, instrument_token: int, minute: datetime) -> list[CompletedCandle]:
         current = self._working.get(instrument_token)
         if current is None or current.started_at == minute:

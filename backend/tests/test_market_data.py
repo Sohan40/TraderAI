@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -33,11 +34,13 @@ from app.market_data.websocket_service import MarketDataStreamService
 
 
 class FakeMarketClient:
-    def __init__(self) -> None:
+    def __init__(self, *, fail_subscribe: bool = False, fail_mode: bool = False) -> None:
         self.stream = FakeStream()
         self.subscribed: list[int] = []
         self.modes: list[tuple[str, list[int]]] = []
         self.fetched_with: tuple[str, str] | None = None
+        self.fail_subscribe = fail_subscribe
+        self.fail_mode = fail_mode
 
     def fetch_instruments(self, *, api_key: str, access_token: str) -> list[Mapping[str, Any]]:
         self.fetched_with = (api_key, access_token)
@@ -80,13 +83,21 @@ class FakeMarketClient:
             "on_close": on_close,
             "on_error": on_error,
         }
+        self.stream.on_ticks = on_ticks
+        self.stream.on_connect = on_connect
+        self.stream.on_close = on_close
+        self.stream.on_error = on_error
         return self.stream
 
     def subscribe(self, stream: KiteQuoteStream, instrument_tokens: Sequence[int]) -> None:
+        if self.fail_subscribe:
+            raise RuntimeError("fake subscribe failure")
         self.subscribed = list(instrument_tokens)
         stream.subscribe(instrument_tokens)
 
     def set_mode(self, stream: KiteQuoteStream, mode: str, instrument_tokens: Sequence[int]) -> None:
+        if self.fail_mode:
+            raise RuntimeError("fake mode failure")
         self.modes.append((mode, list(instrument_tokens)))
         stream.set_mode(mode, instrument_tokens)
 
@@ -119,6 +130,20 @@ class FakeStream:
     def close(self) -> None:
         self.closed = True
         self.connected = False
+        if self.on_close:
+            self.on_close()
+
+    def fire_connect(self) -> None:
+        if self.on_connect:
+            self.on_connect()
+
+    def fire_close(self) -> None:
+        if self.on_close:
+            self.on_close()
+
+    def fire_error(self, category: str = "fake_error") -> None:
+        if self.on_error:
+            self.on_error(category)
 
 
 class FakeSessionProvider:
@@ -143,9 +168,11 @@ class FakeSessionProvider:
 
 
 class FakeRepository:
-    def __init__(self) -> None:
+    def __init__(self, *, fail_save: bool = False) -> None:
         self.instruments: dict[str, InstrumentRecord] = {}
         self.saved_candles: list[CompletedCandle] = []
+        self.save_thread_ids: list[int] = []
+        self.fail_save = fail_save
 
     async def upsert_instruments(self, broker_instruments, watchlist):
         wanted = {symbol.key for symbol in watchlist}
@@ -185,6 +212,9 @@ class FakeRepository:
         return [self.instruments[symbol.key] for symbol in watchlist if symbol.key in self.instruments]
 
     async def save_completed_candles(self, completed):
+        self.save_thread_ids.append(threading.get_ident())
+        if self.fail_save:
+            raise RuntimeError("fake persistence failure")
         self.saved_candles.extend(completed)
         return len(completed)
 
@@ -358,10 +388,39 @@ async def test_websocket_subscription_uses_resolved_instruments_and_quote_mode()
 
     status = await service.start()
 
+    assert client.subscribed == []
+    assert client.modes == []
+    assert status["connected"] is False
+    assert service.status_dict()["connected"] is False
+
+    client.stream.fire_connect()
+
     assert client.subscribed == [111, 222]
     assert client.modes == [("quote", [111, 222])]
-    assert status["connected"] is True
-    assert status["subscribed_symbols"] == 2
+    assert service.status_dict()["connected"] is True
+    assert service.status_dict()["subscribed_symbols"] == 2
+
+
+@pytest.mark.asyncio
+async def test_subscription_failure_inside_on_connect_marks_stream_failed() -> None:
+    repository = FakeRepository()
+    repository.instruments["NSE:NIFTYBEES"] = InstrumentRecord(1, "NSE", "NIFTYBEES", 111, Decimal("0.01"))
+    repository.instruments["NSE:SBIN"] = InstrumentRecord(2, "NSE", "SBIN", 222, Decimal("0.05"))
+    client = FakeMarketClient(fail_subscribe=True)
+    service = MarketDataStreamService(
+        settings=market_settings(),
+        market_client=client,
+        repository=repository,
+        session_provider=FakeSessionProvider(),
+    )
+    await service.start()
+
+    client.stream.fire_connect()
+    status = service.status_dict()
+
+    assert status["connected"] is False
+    assert status["last_error"] == "stream_subscription_failed"
+    assert client.subscribed == []
 
 
 @pytest.mark.asyncio
@@ -377,6 +436,7 @@ async def test_normalized_ticks_create_completed_one_minute_candles() -> None:
         candle_builder=OneMinuteCandleBuilder(),
     )
     await service.start()
+    client.stream.fire_connect()
 
     service.handle_ticks(
         [
@@ -387,7 +447,7 @@ async def test_normalized_ticks_create_completed_one_minute_candles() -> None:
             {"instrument_token": 111, "last_price": "12.00", "volume": 130, "exchange_timestamp": datetime(2026, 5, 30, 9, 16, 1, tzinfo=timezone.utc)},
         ]
     )
-    await asyncio.sleep(0)
+    await service.stop()
 
     assert len(repository.saved_candles) == 1
     candle = repository.saved_candles[0]
@@ -397,6 +457,70 @@ async def test_normalized_ticks_create_completed_one_minute_candles() -> None:
     assert candle.close_price == Decimal("11.00")
     assert candle.volume == 40
     assert candle.source == "KITE_WEBSOCKET"
+
+
+@pytest.mark.asyncio
+async def test_candle_persistence_is_scheduled_on_captured_application_loop(monkeypatch) -> None:
+    app_thread_id = threading.get_ident()
+    repository = FakeRepository()
+    repository.instruments["NSE:NIFTYBEES"] = InstrumentRecord(1, "NSE", "NIFTYBEES", 111, Decimal("0.01"))
+    client = FakeMarketClient()
+    service = MarketDataStreamService(
+        settings=market_settings(market_data_watchlist="NSE:NIFTYBEES"),
+        market_client=client,
+        repository=repository,
+        session_provider=FakeSessionProvider(),
+        candle_builder=OneMinuteCandleBuilder(),
+    )
+    await service.start()
+    client.stream.fire_connect()
+
+    def forbidden_asyncio_run(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("asyncio.run must not be used from ticker callbacks")
+
+    monkeypatch.setattr(asyncio, "run", forbidden_asyncio_run)
+    thread = threading.Thread(
+        target=lambda: service.handle_ticks(
+            [
+                {"instrument_token": 111, "last_price": "9.75", "volume": 80, "exchange_timestamp": datetime(2026, 5, 30, 9, 14, 59, tzinfo=timezone.utc)},
+                {"instrument_token": 111, "last_price": "10.00", "volume": 100, "exchange_timestamp": datetime(2026, 5, 30, 9, 15, 1, tzinfo=timezone.utc)},
+                {"instrument_token": 111, "last_price": "11.00", "volume": 120, "exchange_timestamp": datetime(2026, 5, 30, 9, 16, 1, tzinfo=timezone.utc)},
+            ]
+        )
+    )
+    thread.start()
+    thread.join()
+    await service.stop()
+
+    assert len(repository.saved_candles) == 1
+    assert repository.save_thread_ids == [app_thread_id]
+
+
+@pytest.mark.asyncio
+async def test_candle_persistence_failure_is_observed_in_status() -> None:
+    repository = FakeRepository(fail_save=True)
+    repository.instruments["NSE:NIFTYBEES"] = InstrumentRecord(1, "NSE", "NIFTYBEES", 111, Decimal("0.01"))
+    client = FakeMarketClient()
+    service = MarketDataStreamService(
+        settings=market_settings(market_data_watchlist="NSE:NIFTYBEES"),
+        market_client=client,
+        repository=repository,
+        session_provider=FakeSessionProvider(),
+        candle_builder=OneMinuteCandleBuilder(),
+    )
+    await service.start()
+    client.stream.fire_connect()
+
+    service.handle_ticks(
+        [
+            {"instrument_token": 111, "last_price": "9.75", "volume": 80, "exchange_timestamp": datetime(2026, 5, 30, 9, 14, 59, tzinfo=timezone.utc)},
+            {"instrument_token": 111, "last_price": "10.00", "volume": 100, "exchange_timestamp": datetime(2026, 5, 30, 9, 15, 1, tzinfo=timezone.utc)},
+            {"instrument_token": 111, "last_price": "11.00", "volume": 120, "exchange_timestamp": datetime(2026, 5, 30, 9, 16, 1, tzinfo=timezone.utc)},
+        ]
+    )
+    await service.stop()
+
+    assert service.status_dict()["last_error"] == "candle_persistence_failed"
 
 
 def test_cross_minute_cumulative_volume_uses_previous_tick_baseline() -> None:
@@ -455,6 +579,46 @@ def test_cumulative_volume_decrease_discards_affected_candle() -> None:
     completed = builder.accept_tick(_tick("10:01:01", "102.00", 1040), instrument_id=1)
 
     assert completed == []
+
+
+@pytest.mark.asyncio
+async def test_disconnect_resets_volume_baseline_and_discards_gap_candle() -> None:
+    repository = FakeRepository()
+    repository.instruments["NSE:NIFTYBEES"] = InstrumentRecord(1, "NSE", "NIFTYBEES", 111, Decimal("0.01"))
+    client = FakeMarketClient()
+    service = MarketDataStreamService(
+        settings=market_settings(market_data_watchlist="NSE:NIFTYBEES"),
+        market_client=client,
+        repository=repository,
+        session_provider=FakeSessionProvider(),
+        candle_builder=OneMinuteCandleBuilder(),
+    )
+    await service.start()
+    client.stream.fire_connect()
+
+    service.handle_ticks(
+        [
+            {"instrument_token": 111, "last_price": "99.00", "volume": 1000, "exchange_timestamp": datetime(2026, 5, 30, 9, 59, 59, tzinfo=timezone.utc)},
+            {"instrument_token": 111, "last_price": "100.00", "volume": 1040, "exchange_timestamp": datetime(2026, 5, 30, 10, 0, 8, tzinfo=timezone.utc)},
+            {"instrument_token": 111, "last_price": "101.00", "volume": 1090, "exchange_timestamp": datetime(2026, 5, 30, 10, 0, 55, tzinfo=timezone.utc)},
+            {"instrument_token": 111, "last_price": "102.00", "volume": 1100, "exchange_timestamp": datetime(2026, 5, 30, 10, 1, 1, tzinfo=timezone.utc)},
+        ]
+    )
+    await asyncio.sleep(0)
+    client.stream.fire_close()
+    client.stream.fire_connect()
+    service.handle_ticks(
+        [
+            {"instrument_token": 111, "last_price": "103.00", "volume": 2000, "exchange_timestamp": datetime(2026, 5, 30, 10, 2, 1, tzinfo=timezone.utc)},
+            {"instrument_token": 111, "last_price": "104.00", "volume": 2020, "exchange_timestamp": datetime(2026, 5, 30, 10, 2, 30, tzinfo=timezone.utc)},
+            {"instrument_token": 111, "last_price": "105.00", "volume": 2040, "exchange_timestamp": datetime(2026, 5, 30, 10, 3, 1, tzinfo=timezone.utc)},
+        ]
+    )
+    await service.stop()
+
+    assert len(repository.saved_candles) == 1
+    assert repository.saved_candles[0].started_at == datetime(2026, 5, 30, 10, 0, tzinfo=timezone.utc)
+    assert repository.saved_candles[0].volume == 90
 
 
 def test_stream_status_returns_no_secret_values() -> None:

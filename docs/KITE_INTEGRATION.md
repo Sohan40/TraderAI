@@ -60,8 +60,11 @@ P04 adds read-only market data only:
 
 - Instrument sync stores configured NSE watchlist instruments from Kite's daily instrument dump. The dump is reference data, not a live-price source.
 - Live quotes use Kite WebSocket streaming and default to `quote` mode.
+- WebSocket subscription and mode selection are installed only after Kite invokes the successful `on_connect` callback.
 - Streaming requires an active, non-expired P03 Kite session. The backend decrypts the access token only internally to create the read-only data client.
-- Completed one-minute UTC candles are stored from normalized ticks. Kite quote volume is cumulative for the trading day, so candle volume is derived by adding positive cross-tick cumulative-volume deltas into the current tick's minute bucket. The first partial minute after stream startup is deliberately discarded because no earlier cumulative-volume baseline exists. The current in-progress candle is not flushed on stop or restart.
+- Completed one-minute UTC candles are stored from normalized ticks. Kite quote volume is cumulative for the trading day, so candle volume is derived by adding positive cross-tick cumulative-volume deltas into the current tick's minute bucket. The first partial minute after stream startup is deliberately discarded because no earlier cumulative-volume baseline exists. A WebSocket gap invalidates cumulative-volume baselines and discards the affected partial candle. The current in-progress candle is not flushed on stop or restart.
+- Candle persistence from ticker callbacks is submitted back onto the FastAPI application event loop; callback threads must not create independent asyncio loops for database writes.
+- The P04 stream controller is process-local. Keep the API deployment to a single Uvicorn worker while this controller owns the stream; do not enable multi-worker API deployment until market streaming is moved to a dedicated coordinated runtime.
 - Logout invalidates the Kite access token, so future sync or streaming attempts require reauthentication.
 
 All P04 flags remain disabled by default:

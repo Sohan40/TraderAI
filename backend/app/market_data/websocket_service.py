@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
@@ -54,7 +55,9 @@ class MarketDataStreamService:
         self._completed_candles = 0
         self._resolved: list[InstrumentRecord] = []
         self._instrument_by_token: dict[int, InstrumentRecord] = {}
-        self._pending_completed: list[Any] = []
+        self._stream_tokens: list[int] = []
+        self._app_loop: asyncio.AbstractEventLoop | None = None
+        self._persistence_futures: set[concurrent.futures.Future[int]] = set()
         self._stale_logged = False
 
     async def start(self) -> dict[str, object]:
@@ -78,25 +81,24 @@ class MarketDataStreamService:
 
         self._resolved = resolved
         self._instrument_by_token = {item.instrument_token: item for item in resolved}
-        tokens = list(self._instrument_by_token)
+        self._stream_tokens = list(self._instrument_by_token)
         now = datetime.now(timezone.utc)
+        self._app_loop = asyncio.get_running_loop()
         self._started_at = now
         self._last_activity_at = now
         self._last_error = None
+        self._connected = False
 
         try:
             self._stream = self._market_client.create_quote_stream(
                 api_key=kite_session.api_key,
                 access_token=kite_session.access_token,
                 on_ticks=self.handle_ticks,
-                on_connect=self._mark_connected,
+                on_connect=self._handle_connected,
                 on_close=self._mark_disconnected,
                 on_error=self._mark_error,
             )
             self._stream.connect(threaded=True)
-            self._market_client.subscribe(self._stream, tokens)
-            self._market_client.set_mode(self._stream, self._settings.market_data_mode, tokens)
-            self._connected = True
         except Exception as exc:
             self._stream = None
             self._connected = False
@@ -104,13 +106,14 @@ class MarketDataStreamService:
             logger.warning("market data stream failed to start")
             raise MarketDataStreamError("Market data stream could not be started.") from exc
 
-        logger.info("market data stream started symbol_count=%s", len(tokens))
+        logger.info("market data stream started symbol_count=%s", len(self._stream_tokens))
         return self.status_dict()
 
     async def stop(self) -> dict[str, object]:
         """Stop the quote stream without flushing the in-progress candle."""
         if self._stream is not None:
             self._market_client.disconnect(self._stream)
+        await self._wait_for_pending_persistence()
         self._stream = None
         self._connected = False
         self._last_activity_at = datetime.now(timezone.utc)
@@ -195,35 +198,79 @@ class MarketDataStreamService:
         if self._settings.market_data_mode not in SUPPORTED_STREAM_MODES:
             raise MarketDataStreamError("Unsupported market data mode.")
 
-    def _mark_connected(self) -> None:
+    def _handle_connected(self) -> None:
+        if self._stream is None:
+            self._last_error = "stream_missing_on_connect"
+            return
+        try:
+            self._market_client.subscribe(self._stream, self._stream_tokens)
+            self._market_client.set_mode(
+                self._stream,
+                self._settings.market_data_mode,
+                self._stream_tokens,
+            )
+        except Exception:
+            self._connected = False
+            self._last_error = "stream_subscription_failed"
+            self._last_activity_at = datetime.now(timezone.utc)
+            self._candle_builder.invalidate_after_stream_gap()
+            logger.warning("market data stream subscription failed")
+            try:
+                self._market_client.disconnect(self._stream)
+            except Exception:
+                logger.warning("market data stream disconnect after subscription failure failed")
+            return
+
         self._connected = True
         self._last_activity_at = datetime.now(timezone.utc)
 
     def _mark_disconnected(self) -> None:
         self._connected = False
         self._last_activity_at = datetime.now(timezone.utc)
+        self._candle_builder.invalidate_after_stream_gap()
 
     def _mark_error(self, category: str) -> None:
         self._last_error = category
+        self._connected = False
         self._last_activity_at = datetime.now(timezone.utc)
+        self._candle_builder.invalidate_after_stream_gap()
         logger.warning("market data stream error category=%s", category)
 
     def _save_completed(self, completed: list[Any]) -> None:
         """Persist completed candles from callbacks without exposing raw ticks."""
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            asyncio.run(self._repository.save_completed_candles(completed))
-        else:
-            loop.create_task(self._repository.save_completed_candles(completed))
+        if self._app_loop is None or self._app_loop.is_closed():
+            self._last_error = "candle_persistence_loop_missing"
+            logger.warning("market data candle persistence loop missing")
+            return
 
-    async def flush_pending(self) -> int:
-        """Persist completed candles accumulated by callback handling."""
-        pending = getattr(self, "_pending_completed", [])
+        future = asyncio.run_coroutine_threadsafe(
+            self._repository.save_completed_candles(completed),
+            self._app_loop,
+        )
+        self._persistence_futures.add(future)
+        future.add_done_callback(self._observe_persistence_result)
+
+    def _observe_persistence_result(self, future: concurrent.futures.Future[int]) -> None:
+        self._persistence_futures.discard(future)
+        try:
+            future.result()
+        except Exception:
+            self._last_error = "candle_persistence_failed"
+            logger.warning("market data candle persistence failed")
+
+    async def _wait_for_pending_persistence(self) -> None:
+        pending = [future for future in self._persistence_futures if not future.done()]
         if not pending:
-            return 0
-        self._pending_completed = []
-        return await self._repository.save_completed_candles(pending)
+            return
+        wrapped = [asyncio.wrap_future(future) for future in pending]
+        done, pending_tasks = await asyncio.wait(wrapped, timeout=5)
+        for task in done:
+            try:
+                task.result()
+            except Exception:
+                self._last_error = "candle_persistence_failed"
+        if pending_tasks:
+            self._last_error = "candle_persistence_pending"
 
 
 def normalize_tick(raw_tick: Mapping[str, Any]) -> NormalizedTick:
