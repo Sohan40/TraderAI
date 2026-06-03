@@ -66,6 +66,7 @@ def build_feature_snapshot(
     benchmark_bars: list[CompletedBar] | None = None,
     quote_context: QuoteContext | None = None,
     opening_range_minutes: int = 15,
+    future_live_qualification: dict[str, object] | None = None,
 ) -> FeatureSnapshot:
     """Build a deterministic scanner evidence snapshot."""
     if not bars:
@@ -105,4 +106,5 @@ def build_feature_snapshot(
         data_quality=data_quality,
         signal_status=signal_status,
         veto_reasons=veto_reasons,
+        future_live_qualification=future_live_qualification or {},
     )

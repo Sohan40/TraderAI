@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 
+from app.analysis.schemas import CompletedBar
 from app.core.config import Settings
 from app.scanners.exceptions import ScannerConfigError, ScannerDisabledError
 from app.scanners.repository import ScannerRepository
@@ -16,10 +19,17 @@ MIN_REQUIRED_BARS = 51
 class ScannerService:
     """Run deterministic P05 scanners over stored completed candles only."""
 
-    def __init__(self, *, settings: Settings, repository: ScannerRepository) -> None:
+    def __init__(
+        self,
+        *,
+        settings: Settings,
+        repository: ScannerRepository,
+        now_provider: Callable[[], datetime] | None = None,
+    ) -> None:
         self._settings = settings
         self._repository = repository
         self._config = scanner_config_from_settings(settings)
+        self._now_provider = now_provider or (lambda: datetime.now(timezone.utc))
 
     async def status(self) -> dict[str, object]:
         return {
@@ -49,6 +59,11 @@ class ScannerService:
             )
             if not bars:
                 continue
+            is_stale = self._latest_completed_bar_is_stale(
+                bars=bars,
+                timeframe=timeframe,
+                replay_run_id=replay_run_id,
+            )
             benchmark_bars = None
             if self._config.benchmark_symbol:
                 benchmark_bars = await self._repository.load_completed_bars(
@@ -67,6 +82,7 @@ class ScannerService:
                     benchmark_bars=benchmark_bars[-MIN_REQUIRED_BARS:] if benchmark_bars else None,
                     quote_context=None,
                     replay_run_id=replay_run_id,
+                    is_stale=is_stale,
                 )
                 evaluated += 1
                 candidates += int(evaluation.status == CANDIDATE)
@@ -84,6 +100,26 @@ class ScannerService:
             candidates=candidates,
             rejected=rejected,
             veto_counts=dict(sorted(veto_counter.items())),
+        )
+
+    def _latest_completed_bar_is_stale(
+        self,
+        *,
+        bars: list[CompletedBar],
+        timeframe: str,
+        replay_run_id: str | None,
+    ) -> bool:
+        if replay_run_id is not None or not bars:
+            return False
+        latest = bars[-1]
+        if timeframe != "1minute":
+            return False
+        bar_end = latest.started_at + timedelta(minutes=1)
+        now = self._now_provider()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        return now.astimezone(timezone.utc) - bar_end.astimezone(timezone.utc) > timedelta(
+            seconds=self._config.stale_after_seconds
         )
 
     async def list_signals(self, *, limit: int = 50) -> list[dict[str, object]]:

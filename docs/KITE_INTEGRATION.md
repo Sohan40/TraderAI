@@ -76,3 +76,13 @@ KITE_WEBSOCKET_ENABLED=false
 ```
 
 Caddy and public HTTPS exposure remain callback-focused in this phase. Do not expose operator market-data controls publicly without later dashboard authentication and reverse-proxy hardening.
+
+## P05 Scanner Data Semantics
+
+P05 scanner records are deterministic observations only. A `CANDIDATE` in `SCANNER_OBSERVATION_MODE=SHADOW` means the completed-candle technical setup passed; it is not a paper trade, live eligibility decision or broker instruction.
+
+Spread validation is tracked separately from shadow observation. If no quote/spread context is available, the scanner may still persist an otherwise valid SHADOW technical `CANDIDATE`, but the immutable feature snapshot marks future-live spread validation as missing and not qualified. When a future-live eligibility mode requires spread validation, missing spread remains a hard veto, and supplied wide spreads are rejected.
+
+Live/latest-bar scanner runs compare the latest completed candle end time against `SCANNER_STALE_AFTER_SECONDS` and persist `stale_quote_or_data` when data is stale. Historical replay runs do not use wall-clock freshness because replayed bars are intentionally old.
+
+One-minute candle continuity is enforced within the same IST trading session. Expected gaps across different IST trading dates, such as overnight gaps between sessions, are allowed; missing candles inside a session remain a data-quality veto. Opening-range calculations use only the current IST session.

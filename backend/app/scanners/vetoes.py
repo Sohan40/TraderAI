@@ -31,6 +31,7 @@ def hard_vetoes(
     data_quality: DataQuality,
     config: ScannerConfig,
     strategy_name: str,
+    is_stale: bool = False,
 ) -> list[str]:
     """Return deterministic hard veto reasons for normal missing-data cases."""
     reasons: list[str] = []
@@ -40,11 +41,18 @@ def hard_vetoes(
         reasons.append(MISSING_HISTORY)
     if not data_quality.candle_continuity_ok:
         reasons.append(DATA_QUALITY_FAILURE)
+    if is_stale:
+        reasons.append(STALE_QUOTE_OR_DATA)
     if bars and bars[-1].started_at.astimezone(IST).time() > ENTRY_END:
         reasons.append(OUTSIDE_CONFIGURED_TIME_WINDOW)
     if config.benchmark_symbol and indicators.relative_index_move is None:
         reasons.append(BENCHMARK_DATA_MISSING_WHEN_REQUIRED)
-    if strategy_name == config.future_live_eligible_strategy and config.require_spread_for_future_live:
+    spread_required = (
+        strategy_name == config.future_live_eligible_strategy
+        and config.require_spread_for_future_live
+    )
+    spread_required_now = spread_required and config.observation_mode.upper() != "SHADOW"
+    if spread_required_now:
         if indicators.spread_pct is None:
             reasons.append(SPREAD_UNAVAILABLE_WHEN_REQUIRED)
         elif indicators.spread_pct > Decimal(str(config.max_spread_pct)):

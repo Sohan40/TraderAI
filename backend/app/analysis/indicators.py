@@ -147,14 +147,18 @@ def spread_pct(context: QuoteContext | None) -> Decimal | None:
 
 
 def candle_continuity_ok(bars: list[CompletedBar], *, timeframe: str) -> bool:
-    """Check deterministic continuity for adjacent one-minute bars."""
+    """Check deterministic continuity for one-minute bars within the same IST session."""
     if timeframe != "1minute" or len(bars) < 2:
         return True
-    deltas = [
-        int((current.started_at - previous.started_at).total_seconds())
-        for previous, current in zip(bars[:-1], bars[1:], strict=True)
-    ]
-    return all(delta == 60 for delta in deltas)
+    for previous, current in zip(bars[:-1], bars[1:], strict=True):
+        previous_session = previous.started_at.astimezone(IST).date()
+        current_session = current.started_at.astimezone(IST).date()
+        if previous_session != current_session:
+            continue
+        delta = int((current.started_at - previous.started_at).total_seconds())
+        if delta != 60:
+            return False
+    return True
 
 
 def _typical_price(bar: CompletedBar) -> Decimal:

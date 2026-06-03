@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 
@@ -84,6 +84,7 @@ class FeatureSnapshot:
     data_quality: DataQuality
     signal_status: str
     veto_reasons: list[str]
+    future_live_qualification: dict[str, object] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -96,6 +97,7 @@ class FeatureSnapshot:
             "data_quality": self.data_quality.as_dict(),
             "signal_status": self.signal_status,
             "veto_reasons": list(self.veto_reasons),
+            "future_live_qualification": dict(self.future_live_qualification),
         }
 
 
