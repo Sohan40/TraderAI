@@ -21,6 +21,7 @@ from app.scanners.schemas import (
 from app.scanners.strategies import evaluate_strategy
 
 SCANNER_HISTORY_BAR_LIMIT = 800
+SCANNER_REPLAY_BAR_LIMIT = 100_000
 
 
 class ScannerService:
@@ -90,6 +91,71 @@ class ScannerService:
                     quote_context=None,
                     replay_run_id=replay_run_id,
                     is_stale=is_stale,
+                )
+                evaluated += 1
+                candidates += int(evaluation.status == CANDIDATE)
+                rejected += int(evaluation.status == REJECTED_SIGNAL)
+                veto_counter.update(evaluation.veto_reasons)
+                if await self._repository.insert_signal(evaluation):
+                    inserted += 1
+                else:
+                    duplicates += 1
+                    veto_counter.update(["duplicate_signal"])
+        return ScannerRunResult(
+            evaluated=evaluated,
+            inserted=inserted,
+            duplicates=duplicates,
+            candidates=candidates,
+            rejected=rejected,
+            veto_counts=dict(sorted(veto_counter.items())),
+        )
+
+    async def run_replay(
+        self,
+        *,
+        symbol: str,
+        timeframe: str,
+        replay_run_id: str,
+    ) -> ScannerRunResult:
+        """Replay completed bars chronologically without leaking future candles."""
+        self._validate_timeframe(timeframe)
+        bars = await self._repository.load_completed_bars(
+            symbol=symbol,
+            timeframe=timeframe,
+            limit=SCANNER_REPLAY_BAR_LIMIT,
+        )
+        ordered_bars = sorted(bars, key=lambda bar: bar.started_at)
+        benchmark_bars = None
+        if self._config.benchmark_symbol:
+            benchmark_bars = sorted(
+                await self._repository.load_completed_bars(
+                    symbol=self._config.benchmark_symbol,
+                    timeframe=timeframe,
+                    limit=SCANNER_REPLAY_BAR_LIMIT,
+                ),
+                key=lambda bar: bar.started_at,
+            )
+        evaluated = inserted = duplicates = candidates = rejected = 0
+        veto_counter: Counter[str] = Counter()
+        for index, current_bar in enumerate(ordered_bars):
+            prefix = ordered_bars[: index + 1]
+            benchmark_prefix = None
+            if benchmark_bars is not None:
+                benchmark_prefix = [
+                    bar for bar in benchmark_bars if bar.started_at <= current_bar.started_at
+                ]
+            for strategy_name in self._config.strategies:
+                evaluation = evaluate_strategy(
+                    strategy_name=strategy_name,
+                    instrument_id=current_bar.instrument_id,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    bars=prefix,
+                    config=self._config,
+                    benchmark_bars=benchmark_prefix,
+                    quote_context=None,
+                    replay_run_id=replay_run_id,
+                    is_stale=False,
                 )
                 evaluated += 1
                 candidates += int(evaluation.status == CANDIDATE)

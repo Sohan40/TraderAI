@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -720,6 +722,155 @@ async def test_replay_identity_produces_deterministic_signals() -> None:
     assert all(signal["replay_run_id"] == "replay_a" for signal in signals)
 
 
+@pytest.mark.asyncio
+async def test_replay_evaluates_multiple_completed_bars() -> None:
+    bars = _candidate_bars()
+    repository = InMemoryScannerRepository({"NSE:SBIN": bars})
+    service = ScannerService(
+        settings=Settings(
+            scanner_enabled=True,
+            scanner_strategies="opening_range_breakout_long",
+            scanner_require_spread_for_future_live=False,
+        ),
+        repository=repository,
+    )
+
+    result = await service.run_replay(
+        symbol="NSE:SBIN",
+        timeframe="1minute",
+        replay_run_id="multi_bar_replay",
+    )
+
+    signals = await service.list_signals(limit=200)
+    signal_times = {signal["signal_time"] for signal in signals}
+    assert result.evaluated == len(bars)
+    assert result.inserted == len(bars)
+    assert len(signal_times) > 1
+    assert bars[-1].started_at.isoformat() in signal_times
+
+
+@pytest.mark.asyncio
+async def test_replay_does_not_leak_future_candles_into_early_snapshot() -> None:
+    bars = _bars(count=20)
+    bars[10] = _bar(10, close=Decimal("998"), high=Decimal("999"), low=Decimal("997"))
+    repository = InMemoryScannerRepository({"NSE:SBIN": bars})
+    service = ScannerService(
+        settings=Settings(
+            scanner_enabled=True,
+            scanner_strategies="opening_range_breakout_long",
+            scanner_require_spread_for_future_live=False,
+        ),
+        repository=repository,
+    )
+
+    await service.run_replay(
+        symbol="NSE:SBIN",
+        timeframe="1minute",
+        replay_run_id="no_future_leak",
+    )
+
+    signals = await service.list_signals(limit=200)
+    early_signal = next(
+        signal for signal in signals if signal["signal_time"] == bars[1].started_at.isoformat()
+    )
+    features = cast(dict[str, object], early_signal["features"])
+    indicators = cast(dict[str, str | None], features["indicator_values"])
+    assert str(early_signal["signal_key"]).endswith(bars[1].started_at.isoformat())
+    assert indicators["opening_range_high"] == "102"
+    assert indicators["vwap"] == "100.5000"
+    assert indicators["opening_range_high"] != "999"
+
+
+@pytest.mark.asyncio
+async def test_replay_cli_is_deterministic_for_same_fixture_and_run_id(tmp_path: Path) -> None:
+    fixture = tmp_path / "bars.json"
+    _write_fixture(fixture, _candidate_bars())
+    args = argparse.Namespace(
+        symbol="NSE:SBIN",
+        timeframe="1minute",
+        fixture=str(fixture),
+        strategy="opening_range_breakout_long",
+        replay_run_id="deterministic_replay",
+    )
+
+    first = await run_replay(args)
+    second = await run_replay(args)
+
+    assert first["evaluated"] == second["evaluated"]
+    assert first["inserted"] == second["inserted"]
+    assert first["duplicates"] == second["duplicates"]
+    assert first["signals"] == second["signals"]
+
+
+@pytest.mark.asyncio
+async def test_replay_signal_keys_are_distinct_by_evaluated_bar_timestamp() -> None:
+    bars = _bars(count=5)
+    repository = InMemoryScannerRepository({"NSE:SBIN": bars})
+    service = ScannerService(
+        settings=Settings(
+            scanner_enabled=True,
+            scanner_strategies="opening_range_breakout_long",
+            scanner_require_spread_for_future_live=False,
+        ),
+        repository=repository,
+    )
+
+    await service.run_replay(
+        symbol="NSE:SBIN",
+        timeframe="1minute",
+        replay_run_id="identity_replay",
+    )
+
+    signals = await service.list_signals(limit=200)
+    keys = [str(signal["signal_key"]) for signal in signals]
+    assert len(keys) == len(set(keys)) == len(bars)
+    assert all(key.startswith("identity_replay:NSE:SBIN:1minute:") for key in keys)
+
+
+@pytest.mark.asyncio
+async def test_replay_late_session_fixture_rejects_incomplete_context() -> None:
+    bars = _bars(
+        count=51,
+        start=datetime(2026, 6, 3, 6, 30, tzinfo=timezone.utc),
+        price=100,
+        volume=100,
+    )
+    bars[-2] = _bar(
+        49,
+        start=datetime(2026, 6, 3, 6, 30, tzinfo=timezone.utc),
+        close=Decimal("99"),
+        high=Decimal("100"),
+        volume=100,
+    )
+    bars[-1] = _bar(
+        50,
+        start=datetime(2026, 6, 3, 6, 30, tzinfo=timezone.utc),
+        close=Decimal("102"),
+        high=Decimal("103"),
+        volume=220,
+    )
+    repository = InMemoryScannerRepository({"NSE:SBIN": bars})
+    service = ScannerService(
+        settings=Settings(
+            scanner_enabled=True,
+            scanner_strategies="vwap_pullback_continuation_long",
+            scanner_require_spread_for_future_live=False,
+        ),
+        repository=repository,
+    )
+
+    result = await service.run_replay(
+        symbol="NSE:SBIN",
+        timeframe="1minute",
+        replay_run_id="late_session_replay",
+    )
+
+    signals = await service.list_signals(limit=200)
+    assert result.candidates == 0
+    assert result.veto_counts[INCOMPLETE_SESSION_CONTEXT] == len(bars)
+    assert all(signal["signal_status"] == REJECTED_SIGNAL for signal in signals)
+
+
 def test_candle_continuity_allows_expected_cross_ist_session_gap() -> None:
     previous_session = _bars(
         count=3,
@@ -889,3 +1040,19 @@ def _bar(
         close_price=close,
         volume=volume,
     )
+
+
+def _write_fixture(path: Path, bars: list[CompletedBar]) -> None:
+    rows = [
+        {
+            "instrument_id": bar.instrument_id,
+            "started_at": bar.started_at.isoformat().replace("+00:00", "Z"),
+            "open": str(bar.open_price),
+            "high": str(bar.high_price),
+            "low": str(bar.low_price),
+            "close": str(bar.close_price),
+            "volume": bar.volume,
+        }
+        for bar in bars
+    ]
+    path.write_text(json.dumps(rows), encoding="utf-8")

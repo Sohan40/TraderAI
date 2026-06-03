@@ -34,7 +34,7 @@ async def _run(args: argparse.Namespace) -> dict[str, object]:
         settings=Settings(scanner_enabled=True, scanner_strategies=strategies),
         repository=InMemoryScannerRepository({args.symbol: bars}),
     )
-    run = await service.run_once(
+    run = await service.run_replay(
         symbol=args.symbol,
         timeframe=args.timeframe,
         replay_run_id=args.replay_run_id,
