@@ -38,6 +38,16 @@
 | Micro LIVE initial | One entry/day, ₹500 notional cap, ₹10 planned risk, ₹20 daily loss cap | Continue or stop |
 | Limit reconsideration | Ten micro-live closed trades without operational safety failures | Documented review only |
 
+## P05 Scanner Validation
+
+P05 scanners run only on completed stored candles or explicit replay fixtures. They emit immutable observations and do not create orders, paper fills, OpenAI requests, Kronos calls or MCP calls. Replay is invoked with:
+
+```text
+python -m app.scanners.replay --symbol NSE:SBIN --timeframe 1minute --fixture path/to/bars.json
+```
+
+The fixture must contain completed OHLCV rows. Identical fixture/configuration input should produce identical candidate/rejection counts and signal keys.
+
 ## Operational review after every live day
 
 - Did any order or exit differ from the approved instruction?

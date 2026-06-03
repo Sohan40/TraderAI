@@ -20,3 +20,6 @@ def test_initial_storage_schema_contains_p01_tables() -> None:
 
     assert expected_tables.issubset(metadata.tables)
     assert "source" in metadata.tables["candles"].c
+    assert "signal_status" in metadata.tables["signals"].c
+    assert "veto_reasons" in metadata.tables["signals"].c
+    assert "signal_key" in metadata.tables["signals"].c

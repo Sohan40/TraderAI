@@ -31,6 +31,16 @@ class Settings(BaseSettings):
     market_data_max_instruments: int = 10
     market_data_stale_after_seconds: int = 10
     market_data_candle_interval: str = "1minute"
+    scanner_enabled: bool = False
+    scanner_strategies: str = "opening_range_breakout_long,vwap_pullback_continuation_long"
+    scanner_observation_mode: str = "SHADOW"
+    scanner_future_live_eligible_strategy: str = "opening_range_breakout_long"
+    scanner_opening_range_minutes: int = 15
+    scanner_stale_after_seconds: int = 10
+    scanner_min_volume_ratio: float = 1.5
+    scanner_max_spread_pct: float = 0.20
+    scanner_require_spread_for_future_live: bool = True
+    scanner_benchmark_symbol: str = ""
     app_host: str = Field(
         default="0.0.0.0",
         validation_alias=AliasChoices("API_HOST", "APP_HOST"),

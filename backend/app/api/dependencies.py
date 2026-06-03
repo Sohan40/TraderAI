@@ -20,6 +20,8 @@ from app.market_data.repository import (
     SessionFactoryMarketDataRepository,
 )
 from app.market_data.websocket_service import MarketDataStreamService
+from app.scanners.repository import SQLAlchemyScannerRepository
+from app.scanners.service import ScannerService
 
 _market_data_stream_service: MarketDataStreamService | None = None
 
@@ -106,3 +108,13 @@ async def get_market_data_stream_service() -> MarketDataStreamService:
             ),
         )
     return _market_data_stream_service
+
+
+async def get_scanner_service(
+    session: AsyncSession = Depends(get_session),
+) -> ScannerService:
+    """Build the operator-triggered P05 scanner service."""
+    return ScannerService(
+        settings=settings,
+        repository=SQLAlchemyScannerRepository(session),
+    )

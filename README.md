@@ -77,8 +77,9 @@ Kite data is **not** a replacement for company-news or corporate-event research.
 - P02 provides OFF-mode GCP VM deployment assets under `infra/gcp/`.
 - P03 adds Kite authentication/session handling only, guarded by operator-token protection and disabled by default.
 - P04 adds disabled-by-default read-only Kite market-data scaffolding: instrument sync, a configured NSE watchlist, quote-stream lifecycle controls, and completed one-minute candle storage.
+- P05 adds disabled-by-default deterministic indicators and scanner observations over completed stored candles only.
 - Live trading remains disabled by default with `TRADING_MODE=OFF` and `LIVE_ARMED=false`.
-- OpenAI, scanner, risk-engine, execution and dashboard implementation phases have not started.
+- OpenAI, risk-engine, execution, paper-trading and dashboard implementation phases have not started.
 
 ## Official documentation to verify while implementing
 

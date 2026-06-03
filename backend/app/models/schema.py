@@ -109,8 +109,13 @@ signals = Table(
     Column("id", Integer, primary_key=True),
     Column("instrument_id", ForeignKey("instruments.id"), nullable=False),
     Column("strategy_name", String(100), nullable=False),
+    Column("strategy_version", String(50), nullable=False, server_default="p05_v1"),
+    Column("signal_key", String(255), nullable=False, unique=True),
+    Column("signal_status", String(30), nullable=False, server_default="REJECTED_SIGNAL"),
     Column("signal_time", DateTime(timezone=True), nullable=False),
     Column("direction", String(20), nullable=False),
+    Column("veto_reasons", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    Column("replay_run_id", String(100), nullable=True),
     Column("features", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
 )
@@ -210,5 +215,6 @@ model_runs = Table(
 
 Index("ix_candles_instrument_timeframe_started", candles.c.instrument_id, candles.c.timeframe, candles.c.started_at)
 Index("ix_signals_instrument_signal_time", signals.c.instrument_id, signals.c.signal_time)
+Index("ix_signals_status_created_at", signals.c.signal_status, signals.c.created_at)
 Index("ix_journal_entries_created_at", journal_entries.c.created_at)
 Index("ix_broker_sessions_broker_created_at", broker_sessions.c.broker, broker_sessions.c.created_at)

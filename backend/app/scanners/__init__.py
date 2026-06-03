@@ -1,1 +1,1 @@
-"""Future scanner boundary."""
+"""Deterministic scanner observations for P05."""
