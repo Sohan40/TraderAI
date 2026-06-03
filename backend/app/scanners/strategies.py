@@ -245,8 +245,9 @@ def _future_live_qualification(
     veto_reasons: list[str],
     is_stale: bool,
 ) -> dict[str, object]:
+    eligible_strategy = strategy_name == config.future_live_eligible_strategy
     spread_required = (
-        strategy_name == config.future_live_eligible_strategy
+        eligible_strategy
         and config.require_spread_for_future_live
     )
     spread_validated = spread_pct(quote_context) is not None
@@ -257,11 +258,12 @@ def _future_live_qualification(
         warnings.append("latest_bar_stale")
     return {
         "observation_mode": config.observation_mode,
-        "eligible_strategy": strategy_name == config.future_live_eligible_strategy,
+        "eligible_strategy": eligible_strategy,
         "spread_required": spread_required,
         "spread_validated": spread_validated,
         "future_live_qualified": (
-            status == CANDIDATE
+            eligible_strategy
+            and status == CANDIDATE
             and (not spread_required or spread_validated)
             and SPREAD_TOO_WIDE not in veto_reasons
             and not is_stale

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import cast
@@ -14,8 +15,9 @@ from app.api import dependencies
 from app.api.dependencies import get_scanner_service
 from app.core.config import Settings
 from app.main import app
-from app.scanners.exceptions import ScannerDisabledError
+from app.scanners.exceptions import ScannerDisabledError, ScannerInputError
 from app.scanners.repository import InMemoryScannerRepository
+from app.scanners.replay import _run as run_replay
 from app.scanners.schemas import CANDIDATE, REJECTED_SIGNAL
 from app.scanners.service import ScannerService, scanner_config_from_settings
 from app.scanners.strategies import evaluate_strategy
@@ -122,10 +124,34 @@ def test_shadow_candidate_is_not_rejected_when_future_live_spread_is_missing() -
     assert evaluation.status == CANDIDATE
     assert SPREAD_UNAVAILABLE_WHEN_REQUIRED not in evaluation.veto_reasons
     assert data_quality["spread_available"] is False
+    assert qualification["eligible_strategy"] is True
     assert qualification["spread_required"] is True
     assert qualification["spread_validated"] is False
     assert qualification["future_live_qualified"] is False
     assert "spread_validation_missing" in cast(list[str], qualification["warnings"])
+
+
+def test_eligible_strategy_with_acceptable_spread_can_mark_future_live_metadata() -> None:
+    config = scanner_config_from_settings(Settings(scanner_enabled=True))
+
+    evaluation = evaluate_strategy(
+        strategy_name="opening_range_breakout_long",
+        instrument_id=1,
+        symbol="NSE:SBIN",
+        timeframe="1minute",
+        bars=_candidate_bars(),
+        config=config,
+        quote_context=QuoteContext(bid_price=Decimal("100"), ask_price=Decimal("100.10")),
+    )
+
+    qualification = cast(
+        dict[str, object],
+        evaluation.snapshot.as_dict()["future_live_qualification"],
+    )
+    assert evaluation.status == CANDIDATE
+    assert qualification["eligible_strategy"] is True
+    assert qualification["spread_validated"] is True
+    assert qualification["future_live_qualified"] is True
 
 
 def test_future_live_eligibility_mode_rejects_missing_required_spread() -> None:
@@ -184,6 +210,30 @@ def test_vwap_pullback_candidate_only_when_conditions_pass() -> None:
     assert evaluation.status == CANDIDATE
 
 
+def test_non_eligible_vwap_candidate_is_never_future_live_qualified() -> None:
+    bars = _candidate_bars()
+    bars[-2] = _bar(49, close=Decimal("99"), high=Decimal("100"), volume=100)
+    bars[-1] = _bar(50, close=Decimal("102"), high=Decimal("103"), volume=220)
+    config = scanner_config_from_settings(Settings(scanner_enabled=True))
+
+    evaluation = evaluate_strategy(
+        strategy_name="vwap_pullback_continuation_long",
+        instrument_id=1,
+        symbol="NSE:SBIN",
+        timeframe="1minute",
+        bars=bars,
+        config=config,
+    )
+
+    qualification = cast(
+        dict[str, object],
+        evaluation.snapshot.as_dict()["future_live_qualification"],
+    )
+    assert evaluation.status == CANDIDATE
+    assert qualification["eligible_strategy"] is False
+    assert qualification["future_live_qualified"] is False
+
+
 def test_hard_vetoes_create_rejected_signal_with_reason() -> None:
     config = scanner_config_from_settings(Settings(scanner_enabled=True))
 
@@ -219,6 +269,17 @@ async def test_scanner_service_refuses_when_disabled_and_deduplicates_when_enabl
 
     assert first.inserted == 2
     assert second.duplicates == 2
+
+
+@pytest.mark.asyncio
+async def test_scanner_service_refuses_unsupported_timeframe() -> None:
+    service = ScannerService(
+        settings=Settings(scanner_enabled=True),
+        repository=InMemoryScannerRepository({"NSE:SBIN": _candidate_bars()}),
+    )
+
+    with pytest.raises(ScannerInputError):
+        await service.run_once(symbol="NSE:SBIN", timeframe="5minute")
 
 
 @pytest.mark.asyncio
@@ -348,6 +409,50 @@ def test_scanner_routes_require_operator_and_return_no_secrets(monkeypatch) -> N
     rendered = str(ok.json())
     assert "access_token" not in rendered
     assert "operator-secret" not in rendered
+
+
+def test_scanner_route_refuses_unsupported_timeframe(monkeypatch) -> None:
+    monkeypatch.setattr(dependencies.settings, "operator_auth_token", "operator-secret")
+
+    class RouteService:
+        async def run_once(self, *, symbol: str | None = None, timeframe: str = "1minute") -> object:
+            raise ScannerInputError("unsupported timeframe")
+
+    app.dependency_overrides[get_scanner_service] = lambda: RouteService()
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/v1/scanner/run-once?symbol=NSE:SBIN&timeframe=5minute",
+            headers={"X-Operator-Token": "operator-secret"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "unsupported timeframe"
+
+
+@pytest.mark.asyncio
+async def test_replay_refuses_unsupported_timeframe(tmp_path) -> None:
+    fixture = tmp_path / "bars.json"
+    fixture.write_text(
+        """
+        [
+          {"started_at": "2026-06-03T03:45:00Z", "open": "100", "high": "101", "low": "99", "close": "100", "volume": 100}
+        ]
+        """,
+        encoding="utf-8",
+    )
+    args = argparse.Namespace(
+        symbol="NSE:SBIN",
+        timeframe="5minute",
+        fixture=str(fixture),
+        strategy="opening_range_breakout_long",
+        replay_run_id="bad_timeframe",
+    )
+
+    with pytest.raises(ScannerInputError):
+        await run_replay(args)
 
 
 def test_production_compose_safety_defaults() -> None:

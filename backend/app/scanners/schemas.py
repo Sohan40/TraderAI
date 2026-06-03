@@ -10,6 +10,7 @@ from app.analysis.schemas import FeatureSnapshot
 CANDIDATE = "CANDIDATE"
 REJECTED_SIGNAL = "REJECTED_SIGNAL"
 LONG = "LONG"
+SCANNER_TIMEFRAME = "1minute"
 P05_STRATEGIES = {"opening_range_breakout_long", "vwap_pullback_continuation_long"}
 
 

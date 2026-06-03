@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.dependencies import get_scanner_service, require_operator_token
-from app.scanners.exceptions import ScannerConfigError, ScannerDisabledError
+from app.scanners.exceptions import ScannerConfigError, ScannerDisabledError, ScannerInputError
 from app.scanners.service import ScannerService
 
 router = APIRouter(
@@ -32,6 +32,8 @@ async def scanner_run_once(
         result = await service.run_once(symbol=symbol, timeframe=timeframe)
     except ScannerDisabledError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="scanner disabled") from exc
+    except ScannerInputError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unsupported timeframe") from exc
     except ScannerConfigError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="scanner config invalid") from exc
     return {

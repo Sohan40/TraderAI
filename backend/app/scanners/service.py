@@ -8,9 +8,16 @@ from datetime import datetime, timedelta, timezone
 
 from app.analysis.schemas import CompletedBar
 from app.core.config import Settings
-from app.scanners.exceptions import ScannerConfigError, ScannerDisabledError
+from app.scanners.exceptions import ScannerConfigError, ScannerDisabledError, ScannerInputError
 from app.scanners.repository import ScannerRepository
-from app.scanners.schemas import CANDIDATE, P05_STRATEGIES, REJECTED_SIGNAL, ScannerConfig, ScannerRunResult
+from app.scanners.schemas import (
+    CANDIDATE,
+    P05_STRATEGIES,
+    REJECTED_SIGNAL,
+    SCANNER_TIMEFRAME,
+    ScannerConfig,
+    ScannerRunResult,
+)
 from app.scanners.strategies import evaluate_strategy
 
 MIN_REQUIRED_BARS = 51
@@ -46,6 +53,7 @@ class ScannerService:
         timeframe: str = "1minute",
         replay_run_id: str | None = None,
     ) -> ScannerRunResult:
+        self._validate_timeframe(timeframe)
         if not self._config.enabled and replay_run_id is None:
             raise ScannerDisabledError("Scanner is disabled.")
         symbols = [symbol] if symbol else await self._repository.load_symbols()
@@ -61,7 +69,6 @@ class ScannerService:
                 continue
             is_stale = self._latest_completed_bar_is_stale(
                 bars=bars,
-                timeframe=timeframe,
                 replay_run_id=replay_run_id,
             )
             benchmark_bars = None
@@ -106,14 +113,11 @@ class ScannerService:
         self,
         *,
         bars: list[CompletedBar],
-        timeframe: str,
         replay_run_id: str | None,
     ) -> bool:
         if replay_run_id is not None or not bars:
             return False
         latest = bars[-1]
-        if timeframe != "1minute":
-            return False
         bar_end = latest.started_at + timedelta(minutes=1)
         now = self._now_provider()
         if now.tzinfo is None:
@@ -121,6 +125,10 @@ class ScannerService:
         return now.astimezone(timezone.utc) - bar_end.astimezone(timezone.utc) > timedelta(
             seconds=self._config.stale_after_seconds
         )
+
+    def _validate_timeframe(self, timeframe: str) -> None:
+        if timeframe != SCANNER_TIMEFRAME:
+            raise ScannerInputError("Scanner supports only 1minute completed candles in P05.")
 
     async def list_signals(self, *, limit: int = 50) -> list[dict[str, object]]:
         bounded_limit = max(1, min(limit, 200))
