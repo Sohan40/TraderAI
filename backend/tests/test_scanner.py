@@ -81,6 +81,115 @@ def test_feature_builder_handles_opening_previous_day_volume_benchmark_and_sprea
     assert snapshot.spread_pct == Decimal("0.1000")
 
 
+def test_opening_range_remains_available_late_in_current_session() -> None:
+    prior_session = _bars(count=60, start=datetime(2026, 6, 2, 8, 0, tzinfo=timezone.utc))
+    current_session = _bars(count=120, start=datetime(2026, 6, 3, 3, 45, tzinfo=timezone.utc))
+    current_session[-1] = _bar(
+        119,
+        start=datetime(2026, 6, 3, 3, 45, tzinfo=timezone.utc),
+        close=Decimal("120"),
+        high=Decimal("121"),
+        low=Decimal("119"),
+        volume=220,
+    )
+    config = scanner_config_from_settings(
+        Settings(scanner_enabled=True, scanner_require_spread_for_future_live=False)
+    )
+
+    evaluation = evaluate_strategy(
+        strategy_name="opening_range_breakout_long",
+        instrument_id=1,
+        symbol="NSE:SBIN",
+        timeframe="1minute",
+        bars=prior_session + current_session,
+        config=config,
+    )
+
+    assert evaluation.snapshot.indicator_values.opening_range_high is not None
+    assert evaluation.snapshot.indicator_values.opening_range_low is not None
+    assert evaluation.status == CANDIDATE
+
+
+def test_vwap_uses_current_session_and_includes_candles_older_than_latest_51() -> None:
+    prior_session = _bars(
+        count=100,
+        start=datetime(2026, 6, 2, 3, 45, tzinfo=timezone.utc),
+        price=1000,
+        volume=5000,
+    )
+    current_session = _bars(
+        count=60,
+        start=datetime(2026, 6, 3, 3, 45, tzinfo=timezone.utc),
+        price=10,
+        volume=100,
+    )
+    current_session[0] = _bar(
+        0,
+        start=datetime(2026, 6, 3, 3, 45, tzinfo=timezone.utc),
+        close=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        volume=1000,
+    )
+
+    snapshot = build_indicator_snapshot(prior_session + current_session)
+
+    assert snapshot.vwap == vwap(current_session)
+    assert snapshot.vwap != vwap((prior_session + current_session)[-51:])
+
+
+@pytest.mark.asyncio
+async def test_service_preserves_previous_day_high_late_after_more_than_200_current_bars() -> None:
+    prior_session = _bars(count=375, start=datetime(2026, 6, 2, 3, 45, tzinfo=timezone.utc))
+    prior_session[100] = _bar(
+        100,
+        start=datetime(2026, 6, 2, 3, 45, tzinfo=timezone.utc),
+        close=Decimal("149"),
+        high=Decimal("150"),
+        low=Decimal("148"),
+    )
+    current_session = _bars(count=250, start=datetime(2026, 6, 3, 3, 45, tzinfo=timezone.utc))
+    current_session[-1] = _bar(
+        249,
+        start=datetime(2026, 6, 3, 3, 45, tzinfo=timezone.utc),
+        close=Decimal("120"),
+        high=Decimal("121"),
+        low=Decimal("119"),
+        volume=220,
+    )
+    bars = prior_session + current_session
+    repository = InMemoryScannerRepository({"NSE:SBIN": bars})
+    service = ScannerService(
+        settings=Settings(
+            scanner_enabled=True,
+            scanner_strategies="opening_range_breakout_long",
+            scanner_require_spread_for_future_live=False,
+        ),
+        repository=repository,
+        now_provider=lambda: _fresh_now(bars),
+    )
+
+    await service.run_once(symbol="NSE:SBIN")
+
+    signals = await service.list_signals()
+    features = cast(dict[str, object], signals[0]["features"])
+    indicators = cast(dict[str, str | None], features["indicator_values"])
+    assert indicators["previous_day_high"] == "150"
+    assert indicators["opening_range_high"] is not None
+
+
+def test_trailing_indicators_can_use_prior_session_history_early_in_session() -> None:
+    prior_session = _bars(count=50, start=datetime(2026, 6, 2, 8, 0, tzinfo=timezone.utc))
+    current_session = _bars(count=1, start=datetime(2026, 6, 3, 3, 45, tzinfo=timezone.utc))
+
+    snapshot = build_indicator_snapshot(prior_session + current_session)
+
+    assert snapshot.ema_50 is not None
+    assert snapshot.rsi_14 is not None
+    assert snapshot.atr_14 is not None
+    assert snapshot.volume_ratio is not None
+
+
 def test_opening_range_breakout_candidate_only_when_conditions_pass() -> None:
     bars = _candidate_bars()
     config = scanner_config_from_settings(

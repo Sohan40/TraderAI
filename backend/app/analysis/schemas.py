@@ -32,6 +32,16 @@ class QuoteContext:
 
 
 @dataclass(frozen=True)
+class FeatureInput:
+    """Session-scoped candle inputs for one scanner evaluation."""
+
+    all_bars: list[CompletedBar]
+    trailing_bars: list[CompletedBar]
+    current_session_bars: list[CompletedBar]
+    prior_session_bars: list[CompletedBar]
+
+
+@dataclass(frozen=True)
 class IndicatorSnapshot:
     """Deterministic feature values for a strategy/bar evaluation."""
 

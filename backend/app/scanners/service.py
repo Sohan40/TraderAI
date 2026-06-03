@@ -20,7 +20,7 @@ from app.scanners.schemas import (
 )
 from app.scanners.strategies import evaluate_strategy
 
-MIN_REQUIRED_BARS = 51
+SCANNER_HISTORY_BAR_LIMIT = 800
 
 
 class ScannerService:
@@ -63,7 +63,7 @@ class ScannerService:
             bars = await self._repository.load_completed_bars(
                 symbol=current_symbol,
                 timeframe=timeframe,
-                limit=200,
+                limit=SCANNER_HISTORY_BAR_LIMIT,
             )
             if not bars:
                 continue
@@ -76,7 +76,7 @@ class ScannerService:
                 benchmark_bars = await self._repository.load_completed_bars(
                     symbol=self._config.benchmark_symbol,
                     timeframe=timeframe,
-                    limit=200,
+                    limit=SCANNER_HISTORY_BAR_LIMIT,
                 )
             for strategy_name in self._config.strategies:
                 evaluation = evaluate_strategy(
@@ -84,9 +84,9 @@ class ScannerService:
                     instrument_id=bars[-1].instrument_id,
                     symbol=current_symbol,
                     timeframe=timeframe,
-                    bars=bars[-MIN_REQUIRED_BARS:],
+                    bars=bars,
                     config=self._config,
-                    benchmark_bars=benchmark_bars[-MIN_REQUIRED_BARS:] if benchmark_bars else None,
+                    benchmark_bars=benchmark_bars,
                     quote_context=None,
                     replay_run_id=replay_run_id,
                     is_stale=is_stale,
