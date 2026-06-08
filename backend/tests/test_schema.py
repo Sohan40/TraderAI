@@ -23,3 +23,14 @@ def test_initial_storage_schema_contains_p01_tables() -> None:
     assert "signal_status" in metadata.tables["signals"].c
     assert "veto_reasons" in metadata.tables["signals"].c
     assert "signal_key" in metadata.tables["signals"].c
+    assert "simulated" in metadata.tables["orders"].c
+    assert "signal_id" in metadata.tables["orders"].c
+    assert "simulated" in metadata.tables["trades"].c
+    assert "signal_id" in metadata.tables["trades"].c
+    assert "gross_pnl" in metadata.tables["trades"].c
+    assert "estimated_costs" in metadata.tables["trades"].c
+    assert "net_pnl" in metadata.tables["trades"].c
+    assert "exit_reason" in metadata.tables["trades"].c
+    assert "uq_trades_paper_signal_id" in {
+        index.name for index in metadata.tables["trades"].indexes
+    }

@@ -41,6 +41,15 @@ class Settings(BaseSettings):
     scanner_max_spread_pct: float = 0.20
     scanner_require_spread_for_future_live: bool = True
     scanner_benchmark_symbol: str = ""
+    paper_enabled: bool = False
+    paper_mode: str = "OFF"
+    paper_max_trades_per_day: int = 3
+    paper_default_quantity: int = 1
+    paper_entry_buffer_pct: float = 0
+    paper_stop_pct: float = 0.50
+    paper_target_r_multiple: float = 2.0
+    paper_force_flat_time_ist: str = "15:10"
+    paper_estimated_cost_per_trade: float = 0
     app_host: str = Field(
         default="0.0.0.0",
         validation_alias=AliasChoices("API_HOST", "APP_HOST"),

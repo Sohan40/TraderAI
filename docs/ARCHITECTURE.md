@@ -11,6 +11,7 @@ Build a narrow autonomous trading experiment that executes only rule-bounded, lo
 | Market Data Service | Kite WebSocket ingestion, instrument sync, candle aggregation, data-health heartbeat | Trading decisions |
 | Indicator Engine | EMA/RSI/ATR/VWAP/spread and context features | Broker calls |
 | Scanner | Deterministic candidate generation | Position sizing or live execution |
+| Paper Trading Engine | Simulated lifecycle replay over P05 candidates and stored candles | Broker calls or live execution |
 | OpenAI Decision Agent | Veto/approve a scanner candidate using supplied JSON only | Web research, quantities, broker payloads, risk overrides |
 | Risk Engine | Final automatic approval, sizing, stop/target validation, daily caps | Narrative market claims |
 | Execution Gateway | Exact broker call, idempotency, order-state reconciliation, protective exit placement | AI interpretation |
@@ -100,6 +101,8 @@ P04 adds read-only market-data ingestion controls only. Instrument sync uses the
 P05 adds deterministic indicators and scanner observations over completed stored candles only. The scanner is disabled by default, runs only when explicitly operator-triggered or through replay, persists immutable `CANDIDATE`/`REJECTED_SIGNAL` records with veto reasons, and has no order, paper-fill, OpenAI, Kronos, MCP or broker-call authority.
 
 P05 session-based strategies require complete stored current-session context from the NSE 09:15 IST open. VWAP pullback candidates require continuous one-minute candles from 09:15 through the evaluated bar, and opening-range breakout candidates require the configured opening-range window from 09:15 to be complete. Until historical backfill exists, late-start streams generate data-quality rejections rather than partial-session candidates.
+
+P06 adds deterministic paper replay only. The paper engine is disabled by default, consumes only persisted P05 `CANDIDATE` signals, ignores `REJECTED_SIGNAL`, simulates long-only limit entries and exits from completed one-minute candles, and stores simulated order/event/trade/journal rows. `OFF` and `SHADOW` create no paper orders or fills. `LIVE` raises an explicit disabled/not-implemented error; no real execution gateway is introduced.
 
 ### Static-IP/execution isolation
 

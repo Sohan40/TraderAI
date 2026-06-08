@@ -48,6 +48,18 @@ python -m app.scanners.replay --symbol NSE:SBIN --timeframe 1minute --fixture pa
 
 The fixture must contain completed OHLCV rows. Identical fixture/configuration input should produce identical candidate/rejection counts and signal keys.
 
+## P06 Paper Validation
+
+P06 paper replay is disabled by default with `PAPER_ENABLED=false` and `PAPER_MODE=OFF`. In `PAPER` mode it consumes only persisted P05 `CANDIDATE` signals and completed `1minute` candles. Entry is a simulated long-only limit buy; stop and target are checked on later candles, with stop winning if both stop and target touch in the same candle. If the replay reaches the configured force-flat time, default `15:10` IST, the trade exits at that candle close. If data ends earlier, the trade exits at the last later candle close with `TIME_EXIT`, or records `DATA_ENDED` if no later candle exists.
+
+Replay is invoked with:
+
+```text
+python -m app.paper.replay --symbol NSE:SBIN --from 2026-06-03T03:45:00Z --to 2026-06-03T09:45:00Z --enable-paper
+```
+
+P06 never calls Kite, OpenAI, Kronos or MCP, and `LIVE` remains disabled/not implemented.
+
 ## Operational review after every live day
 
 - Did any order or exit differ from the approved instruction?

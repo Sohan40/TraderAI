@@ -10,4 +10,6 @@ P04 adds read-only market-data routes for instrument sync and quote-stream lifec
 
 P05 adds deterministic indicators and scanner observations over completed stored candles only. Scanner execution is disabled by default and operator-triggered; it emits only immutable `CANDIDATE` or `REJECTED_SIGNAL` records.
 
-Trading remains impossible in this phase: there are no OpenAI calls, order execution code, paper fills, or live-trading service.
+P06 adds a disabled-by-default deterministic paper engine and journal. It consumes persisted P05 `CANDIDATE` records, simulates long-only limit entries, stop/target/time/force-flat exits over completed one-minute candles, and stores clearly simulated order/event/trade/journal rows.
+
+Live trading remains impossible: there are no OpenAI calls, no real broker order gateway, and `LIVE` paper mode raises a disabled/not-implemented error.

@@ -20,6 +20,8 @@ from app.market_data.repository import (
     SessionFactoryMarketDataRepository,
 )
 from app.market_data.websocket_service import MarketDataStreamService
+from app.paper.repository import SQLAlchemyPaperRepository
+from app.paper.service import PaperService
 from app.scanners.repository import SQLAlchemyScannerRepository
 from app.scanners.service import ScannerService
 
@@ -117,4 +119,14 @@ async def get_scanner_service(
     return ScannerService(
         settings=settings,
         repository=SQLAlchemyScannerRepository(session),
+    )
+
+
+async def get_paper_service(
+    session: AsyncSession = Depends(get_session),
+) -> PaperService:
+    """Build the operator-triggered P06 paper service."""
+    return PaperService(
+        settings=settings,
+        repository=SQLAlchemyPaperRepository(session),
     )

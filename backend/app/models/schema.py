@@ -148,6 +148,8 @@ orders = Table(
     metadata,
     Column("id", Integer, primary_key=True),
     Column("risk_check_id", ForeignKey("risk_checks.id"), nullable=True),
+    Column("signal_id", ForeignKey("signals.id"), nullable=True),
+    Column("simulated", Boolean, nullable=False, server_default="false"),
     Column("broker_order_id", String(100), nullable=True, unique=True),
     Column("instrument_id", ForeignKey("instruments.id"), nullable=True),
     Column("side", String(10), nullable=False),
@@ -175,6 +177,8 @@ trades = Table(
     "trades",
     metadata,
     Column("id", Integer, primary_key=True),
+    Column("signal_id", ForeignKey("signals.id"), nullable=True),
+    Column("simulated", Boolean, nullable=False, server_default="false"),
     Column("entry_order_id", ForeignKey("orders.id"), nullable=True),
     Column("exit_order_id", ForeignKey("orders.id"), nullable=True),
     Column("instrument_id", ForeignKey("instruments.id"), nullable=False),
@@ -182,6 +186,11 @@ trades = Table(
     Column("entry_price", Numeric(18, 6), nullable=True),
     Column("exit_price", Numeric(18, 6), nullable=True),
     Column("realized_pnl", Numeric(18, 6), nullable=True),
+    Column("gross_pnl", Numeric(18, 6), nullable=True),
+    Column("estimated_costs", Numeric(18, 6), nullable=True),
+    Column("net_pnl", Numeric(18, 6), nullable=True),
+    Column("exit_reason", String(50), nullable=True),
+    Column("paper_mode", String(20), nullable=True),
     Column("opened_at", DateTime(timezone=True), nullable=True),
     Column("closed_at", DateTime(timezone=True), nullable=True),
     Column("status", String(50), nullable=False),
@@ -218,3 +227,11 @@ Index("ix_signals_instrument_signal_time", signals.c.instrument_id, signals.c.si
 Index("ix_signals_status_created_at", signals.c.signal_status, signals.c.created_at)
 Index("ix_journal_entries_created_at", journal_entries.c.created_at)
 Index("ix_broker_sessions_broker_created_at", broker_sessions.c.broker, broker_sessions.c.created_at)
+Index("ix_orders_signal_simulated", orders.c.signal_id, orders.c.simulated)
+Index("ix_trades_signal_simulated", trades.c.signal_id, trades.c.simulated)
+Index(
+    "uq_trades_paper_signal_id",
+    trades.c.signal_id,
+    unique=True,
+    postgresql_where=text("simulated = true AND signal_id IS NOT NULL"),
+)
