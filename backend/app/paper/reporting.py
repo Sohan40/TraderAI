@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from decimal import Decimal
 
-from app.paper.schemas import PaperMode
+from app.paper.schemas import PAPER_ENTRY_FILLED, PAPER_ENTRY_NO_FILL, PaperMode
 
 
 def build_paper_report(
@@ -20,7 +20,9 @@ def build_paper_report(
     costs = Decimal("0")
     net = Decimal("0")
     simulated = 0
-    trades = 0
+    entry_attempts = 0
+    no_fills = 0
+    filled_trades = 0
     rejections = 0
     for outcome in outcomes:
         if outcome.get("simulated") is True:
@@ -30,17 +32,26 @@ def build_paper_report(
         gross += _decimal(outcome.get("gross_pnl"))
         costs += _decimal(outcome.get("estimated_costs"))
         net += _decimal(outcome.get("net_estimated_pnl"))
-        if outcome.get("entry_order_status") in {"PAPER_ENTRY_FILLED", "PAPER_ENTRY_NO_FILL"}:
-            trades += 1
+        entry_status = outcome.get("entry_order_status")
+        if entry_status in {PAPER_ENTRY_FILLED, PAPER_ENTRY_NO_FILL}:
+            entry_attempts += 1
+        if entry_status == PAPER_ENTRY_NO_FILL:
+            no_fills += 1
+        if entry_status == PAPER_ENTRY_FILLED:
+            filled_trades += 1
         if outcome.get("rejection_reason"):
             rejections += 1
     return {
         "paper_enabled": paper_enabled,
         "paper_mode": paper_mode.value,
         "simulated_only": True,
-        "outcomes": len(outcomes),
+        "journal_outcomes": len(outcomes),
+        "candidate_signal_outcomes": len(outcomes),
         "simulated_outcomes": simulated,
-        "paper_trade_outcomes": trades,
+        "entry_attempt_outcomes": entry_attempts,
+        "no_fill_outcomes": no_fills,
+        "filled_paper_trade_outcomes": filled_trades,
+        "paper_trade_outcomes": filled_trades,
         "rejections": rejections,
         "gross_pnl": _money(gross),
         "estimated_costs": _money(costs),

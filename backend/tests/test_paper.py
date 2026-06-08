@@ -125,7 +125,12 @@ async def test_limit_no_fill_path() -> None:
     assert outcome.exit_reason == PaperExitReason.NO_FILL
     assert outcome.entry_order_status == "PAPER_ENTRY_NO_FILL"
     assert outcome.entry_fill_time is None
-    assert repo.trades[0]["status"] == "PAPER_NO_FILL"
+    assert summary.trades_created == 0
+    assert summary.no_fill_outcomes == 1
+    assert len(repo.orders) == 1
+    assert repo.orders[0]["status"] == "PAPER_ENTRY_NO_FILL"
+    assert repo.trades == []
+    assert repo.journal[0]["exit_reason"] == "NO_FILL"
 
 
 @pytest.mark.asyncio
@@ -208,6 +213,38 @@ async def test_duplicate_candidate_cannot_open_duplicate_paper_trade() -> None:
 
 
 @pytest.mark.asyncio
+async def test_no_fill_does_not_count_toward_daily_max_trades() -> None:
+    no_fill_signal = _candidate(id=1, symbol="NSE:SBIN", instrument_id=1, key_suffix="no-fill")
+    filled_signal = _candidate(
+        id=2,
+        symbol="NSE:NIFTYBEES",
+        instrument_id=2,
+        key_suffix="filled",
+    )
+    repo = InMemoryPaperRepository(
+        signals=[no_fill_signal, filled_signal],
+        candles_by_symbol={
+            "NSE:SBIN": _no_fill_bars(symbol="NSE:SBIN", instrument_id=1),
+            "NSE:NIFTYBEES": _target_bars(symbol="NSE:NIFTYBEES", instrument_id=2),
+        },
+    )
+    service = PaperService(settings=_settings(paper_max_trades_per_day=1), repository=repo)
+
+    summary = await service.run_replay()
+
+    assert summary.signals_loaded == 2
+    assert summary.entry_attempts == 2
+    assert summary.no_fill_outcomes == 1
+    assert summary.trades_created == 1
+    assert len(repo.trades) == 1
+    assert repo.trades[0]["signal_id"] == 2
+    assert [outcome.exit_reason for outcome in summary.outcomes] == [
+        PaperExitReason.NO_FILL,
+        PaperExitReason.TARGET_HIT,
+    ]
+
+
+@pytest.mark.asyncio
 async def test_pnl_and_estimated_cost_are_calculated() -> None:
     repo = _repo_with(_candidate(), _target_bars())
     service = PaperService(
@@ -255,18 +292,35 @@ async def test_missing_signal_context_creates_clear_rejected_paper_outcome() -> 
 
 @pytest.mark.asyncio
 async def test_paper_report_and_trades_return_journal_fields() -> None:
-    repo = _repo_with(_candidate(), _target_bars())
+    no_fill_signal = _candidate(id=1, symbol="NSE:SBIN", instrument_id=1, key_suffix="no-fill")
+    filled_signal = _candidate(
+        id=2,
+        symbol="NSE:NIFTYBEES",
+        instrument_id=2,
+        key_suffix="filled",
+    )
+    repo = InMemoryPaperRepository(
+        signals=[no_fill_signal, filled_signal],
+        candles_by_symbol={
+            "NSE:SBIN": _no_fill_bars(symbol="NSE:SBIN", instrument_id=1),
+            "NSE:NIFTYBEES": _target_bars(symbol="NSE:NIFTYBEES", instrument_id=2),
+        },
+    )
     service = PaperService(settings=_settings(), repository=repo)
-    await service.run_replay(symbol="NSE:SBIN")
+    await service.run_replay()
 
     report = await service.report()
     trades = await service.trades()
 
     assert report["paper_mode"] == "PAPER"
     assert report["paper_trade_outcomes"] == 1
+    assert report["entry_attempt_outcomes"] == 2
+    assert report["no_fill_outcomes"] == 1
+    assert report["filled_paper_trade_outcomes"] == 1
     assert report["net_estimated_pnl"] == "1.000000"
-    assert trades[0]["signal_key"] == "paper-test:NSE:SBIN"
-    assert trades[0]["entry_reference_price"] == "100.000000"
+    assert {trade["exit_reason"] for trade in trades} == {"NO_FILL", "TARGET_HIT"}
+    filled = next(trade for trade in trades if trade["exit_reason"] == "TARGET_HIT")
+    assert filled["entry_reference_price"] == "100.000000"
 
 
 def test_paper_routes_require_operator_and_return_safe_status(monkeypatch) -> None:
@@ -359,6 +413,11 @@ def _settings(**overrides: object) -> Settings:
 
 def _candidate(
     *,
+    id: int = 1,
+    instrument_id: int = 1,
+    symbol: str = "NSE:SBIN",
+    minute: int = 0,
+    key_suffix: str = "NSE:SBIN",
     status: str = CANDIDATE,
     veto_reasons: list[str] | None = None,
     features: dict[str, object] | None = None,
@@ -371,14 +430,14 @@ def _candidate(
         "data_quality": {"history_complete": True},
     }
     return PaperSignal(
-        id=1,
-        instrument_id=1,
-        signal_key="paper-test:NSE:SBIN",
-        symbol="NSE:SBIN",
+        id=id,
+        instrument_id=instrument_id,
+        signal_key=f"paper-test:{key_suffix}",
+        symbol=symbol,
         strategy_name="opening_range_breakout_long",
         strategy_version="p05_v1",
         signal_status=status,
-        signal_time=_dt(0),
+        signal_time=_dt(minute),
         direction=LONG,
         veto_reasons=vetoes,
         features=snapshot if features is None else features,
@@ -390,11 +449,29 @@ def _repo_with(signal: PaperSignal, bars: list[CompletedBar]) -> InMemoryPaperRe
     return InMemoryPaperRepository(signals=[signal], candles_by_symbol={"NSE:SBIN": bars})
 
 
-def _target_bars() -> list[CompletedBar]:
+def _target_bars(
+    *,
+    symbol: str = "NSE:SBIN",
+    instrument_id: int = 1,
+) -> list[CompletedBar]:
     return [
-        _bar(0, close=Decimal("100")),
-        _bar(1, close=Decimal("100.10"), high=Decimal("100.20"), low=Decimal("99.90")),
-        _bar(2, close=Decimal("101.10"), high=Decimal("101.20"), low=Decimal("100.20")),
+        _bar(0, close=Decimal("100"), symbol=symbol, instrument_id=instrument_id),
+        _bar(
+            1,
+            close=Decimal("100.10"),
+            high=Decimal("100.20"),
+            low=Decimal("99.90"),
+            symbol=symbol,
+            instrument_id=instrument_id,
+        ),
+        _bar(
+            2,
+            close=Decimal("101.10"),
+            high=Decimal("101.20"),
+            low=Decimal("100.20"),
+            symbol=symbol,
+            instrument_id=instrument_id,
+        ),
     ]
 
 
@@ -431,11 +508,29 @@ def _force_flat_bars() -> list[CompletedBar]:
     ]
 
 
-def _no_fill_bars() -> list[CompletedBar]:
+def _no_fill_bars(
+    *,
+    symbol: str = "NSE:SBIN",
+    instrument_id: int = 1,
+) -> list[CompletedBar]:
     return [
-        _bar(0, close=Decimal("100")),
-        _bar(1, close=Decimal("100.50"), high=Decimal("101.00"), low=Decimal("100.10")),
-        _bar(2, close=Decimal("100.80"), high=Decimal("101.20"), low=Decimal("100.20")),
+        _bar(0, close=Decimal("100"), symbol=symbol, instrument_id=instrument_id),
+        _bar(
+            1,
+            close=Decimal("100.50"),
+            high=Decimal("101.00"),
+            low=Decimal("100.10"),
+            symbol=symbol,
+            instrument_id=instrument_id,
+        ),
+        _bar(
+            2,
+            close=Decimal("100.80"),
+            high=Decimal("101.20"),
+            low=Decimal("100.20"),
+            symbol=symbol,
+            instrument_id=instrument_id,
+        ),
     ]
 
 
@@ -445,10 +540,12 @@ def _bar(
     close: Decimal,
     high: Decimal | None = None,
     low: Decimal | None = None,
+    symbol: str = "NSE:SBIN",
+    instrument_id: int = 1,
 ) -> CompletedBar:
     return CompletedBar(
-        instrument_id=1,
-        symbol="NSE:SBIN",
+        instrument_id=instrument_id,
+        symbol=symbol,
         timeframe="1minute",
         started_at=_dt(index),
         open_price=close,

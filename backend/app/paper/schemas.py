@@ -16,8 +16,8 @@ PAPER_ENTRY_FILLED = "PAPER_ENTRY_FILLED"
 PAPER_ENTRY_NO_FILL = "PAPER_ENTRY_NO_FILL"
 PAPER_EXIT_FILLED = "PAPER_EXIT_FILLED"
 PAPER_TRADE_CLOSED = "PAPER_CLOSED"
-PAPER_TRADE_NO_FILL = "PAPER_NO_FILL"
 PAPER_TRADE_DATA_ENDED = "PAPER_DATA_ENDED"
+PAPER_ENTRY_ATTEMPT_ENTRY_TYPE = "PAPER_ENTRY_ATTEMPT"
 PAPER_REJECTION_ENTRY_TYPE = "PAPER_REJECTION"
 PAPER_TRADE_ENTRY_TYPE = "PAPER_TRADE"
 
@@ -178,6 +178,18 @@ class PaperReplaySummary:
     outcomes: list[PaperSimulationResult]
 
     @property
+    def entry_attempts(self) -> int:
+        return sum(
+            1
+            for outcome in self.outcomes
+            if outcome.entry_order_status in {PAPER_ENTRY_FILLED, PAPER_ENTRY_NO_FILL}
+        )
+
+    @property
+    def no_fill_outcomes(self) -> int:
+        return sum(1 for outcome in self.outcomes if outcome.exit_reason == PaperExitReason.NO_FILL)
+
+    @property
     def trades_created(self) -> int:
         return sum(1 for outcome in self.outcomes if outcome.trade_created)
 
@@ -202,7 +214,11 @@ class PaperReplaySummary:
             "paper_enabled": self.paper_enabled,
             "paper_mode": self.paper_mode.value,
             "signals_loaded": self.signals_loaded,
+            "candidate_signals_loaded": self.signals_loaded,
+            "entry_attempts": self.entry_attempts,
+            "no_fill_outcomes": self.no_fill_outcomes,
             "trades_created": self.trades_created,
+            "filled_paper_trades": self.trades_created,
             "rejections": self.rejections,
             "gross_pnl": _money(self.gross_pnl),
             "estimated_costs": _money(self.estimated_costs),
@@ -271,7 +287,7 @@ def no_fill_outcome(
         gross_pnl=Decimal("0"),
         estimated_costs=Decimal("0"),
         net_estimated_pnl=Decimal("0"),
-        trade_created=True,
+        trade_created=False,
     )
 
 

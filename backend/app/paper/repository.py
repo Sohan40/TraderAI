@@ -15,7 +15,9 @@ from app.analysis.indicators import IST
 from app.analysis.schemas import CompletedBar
 from app.models.schema import candles, instruments, journal_entries, order_events, orders, signals, trades
 from app.paper.schemas import (
+    PAPER_ENTRY_ATTEMPT_ENTRY_TYPE,
     PAPER_ENTRY_FILLED,
+    PAPER_ENTRY_NO_FILL,
     PAPER_ENTRY_ORDER_TYPE,
     PAPER_ENTRY_SUBMITTED,
     PAPER_EXIT_FILLED,
@@ -25,7 +27,6 @@ from app.paper.schemas import (
     PAPER_TRADE_CLOSED,
     PAPER_TRADE_DATA_ENDED,
     PAPER_TRADE_ENTRY_TYPE,
-    PAPER_TRADE_NO_FILL,
     PaperExitReason,
     PaperSignal,
     PaperSimulationResult,
@@ -68,7 +69,7 @@ class PaperRepository(Protocol):
         signal: PaperSignal,
         outcome: PaperSimulationResult,
     ) -> None:
-        """Persist simulated orders/events/trade rows and journal payload."""
+        """Persist simulated order attempts, trade rows and journal payload."""
 
     async def list_journal_outcomes(self, *, limit: int) -> list[dict[str, object]]:
         """Return recent paper journal payloads."""
@@ -190,8 +191,11 @@ class SQLAlchemyPaperRepository:
     ) -> None:
         try:
             trade_id: int | None = None
-            if outcome.trade_created:
+            if _has_entry_attempt(outcome):
                 entry_order_id = await self._insert_entry_order(signal=signal, outcome=outcome)
+            else:
+                entry_order_id = None
+            if outcome.trade_created and entry_order_id is not None:
                 exit_order_id = await self._insert_exit_order(
                     signal=signal,
                     outcome=outcome,
@@ -213,7 +217,11 @@ class SQLAlchemyPaperRepository:
             select(journal_entries.c.payload)
             .where(
                 journal_entries.c.entry_type.in_(
-                    [PAPER_TRADE_ENTRY_TYPE, PAPER_REJECTION_ENTRY_TYPE]
+                    [
+                        PAPER_TRADE_ENTRY_TYPE,
+                        PAPER_ENTRY_ATTEMPT_ENTRY_TYPE,
+                        PAPER_REJECTION_ENTRY_TYPE,
+                    ]
                 )
             )
             .order_by(desc(journal_entries.c.created_at), desc(journal_entries.c.id))
@@ -338,7 +346,12 @@ class SQLAlchemyPaperRepository:
         outcome: PaperSimulationResult,
         trade_id: int | None,
     ) -> None:
-        entry_type = PAPER_TRADE_ENTRY_TYPE if outcome.trade_created else PAPER_REJECTION_ENTRY_TYPE
+        if outcome.trade_created:
+            entry_type = PAPER_TRADE_ENTRY_TYPE
+        elif _has_entry_attempt(outcome):
+            entry_type = PAPER_ENTRY_ATTEMPT_ENTRY_TYPE
+        else:
+            entry_type = PAPER_REJECTION_ENTRY_TYPE
         subject_type = "trade" if trade_id is not None else "signal"
         subject_id = trade_id if trade_id is not None else signal.id
         payload = outcome.as_payload()
@@ -425,7 +438,7 @@ class InMemoryPaperRepository:
     ) -> None:
         if outcome.trade_created and await self.paper_trade_exists(signal_id=signal.id):
             raise DuplicatePaperTradeError("paper trade already exists for signal")
-        if outcome.trade_created:
+        if _has_entry_attempt(outcome):
             entry_order_id = len(self.orders) + 1
             self.orders.append(
                 {
@@ -446,6 +459,9 @@ class InMemoryPaperRepository:
                     "payload": _event_payload(outcome, event_type=outcome.entry_order_status),
                 }
             )
+        else:
+            entry_order_id = None
+        if outcome.trade_created and entry_order_id is not None:
             exit_order_id = None
             if outcome.entry_order_status == PAPER_ENTRY_FILLED and outcome.exit_price is not None:
                 exit_order_id = len(self.orders) + 1
@@ -521,11 +537,13 @@ def _event_payload(outcome: PaperSimulationResult, *, event_type: str) -> dict[s
 
 
 def _trade_status(outcome: PaperSimulationResult) -> str:
-    if outcome.exit_reason == PaperExitReason.NO_FILL:
-        return PAPER_TRADE_NO_FILL
     if outcome.exit_reason == PaperExitReason.DATA_ENDED:
         return PAPER_TRADE_DATA_ENDED
     return PAPER_TRADE_CLOSED
+
+
+def _has_entry_attempt(outcome: PaperSimulationResult) -> bool:
+    return outcome.entry_order_status in {PAPER_ENTRY_FILLED, PAPER_ENTRY_NO_FILL}
 
 
 def _ist_day_bounds(value: datetime) -> tuple[datetime, datetime]:
