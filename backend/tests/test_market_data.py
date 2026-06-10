@@ -6,13 +6,18 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.api import dependencies
-from app.api.dependencies import get_market_data_stream_service
+from app.api.dependencies import (
+    get_market_data_stream_service,
+    get_stream_readiness_service,
+    get_watchlist_validation_service,
+)
 from app.broker.exceptions import KiteSessionError
 from app.broker.session_provider import KiteAccessSession, KiteAccessSessionProvider
 from app.broker.session_store import BROKER_ZERODHA, STATUS_ACTIVE, BrokerSessionRecord
@@ -29,7 +34,9 @@ from app.market_data.exceptions import (
 from app.market_data.instrument_sync import InstrumentSyncService
 from app.market_data.kite_market_client import KiteConnectMarketClient, KiteQuoteStream
 from app.market_data.schemas import CompletedCandle, InstrumentRecord, NormalizedTick
+from app.market_data.stream_readiness import StreamReadinessService
 from app.market_data.watchlist import parse_watchlist
+from app.market_data.watchlist_validation import WatchlistValidationService
 from app.market_data.websocket_service import MarketDataStreamService
 
 
@@ -211,6 +218,9 @@ class FakeRepository:
     async def resolve_watchlist(self, watchlist):
         return [self.instruments[symbol.key] for symbol in watchlist if symbol.key in self.instruments]
 
+    async def inspect_watchlist(self, watchlist):
+        return [self.instruments[symbol.key] for symbol in watchlist if symbol.key in self.instruments]
+
     async def save_completed_candles(self, completed):
         self.save_thread_ids.append(threading.get_ident())
         if self.fail_save:
@@ -338,7 +348,7 @@ async def test_stream_start_refuses_unresolved_watchlist_symbols() -> None:
         session_provider=FakeSessionProvider(),
     )
 
-    with pytest.raises(WatchlistError):
+    with pytest.raises(WatchlistError, match="missing_symbols: NSE:SBIN"):
         await service.start()
 
 
@@ -370,6 +380,9 @@ async def test_instrument_upsert_for_fake_response() -> None:
     assert client.fetched_with == ("fake-api-key", "decrypted-token")
     assert result.inserted == 1
     assert result.skipped == 1
+    assert result.watchlist_validation is not None
+    assert result.watchlist_validation["ready_for_stream"] is True
+    assert result.watchlist_validation["missing_symbols"] == []
     assert repository.instruments["NSE:NIFTYBEES"].instrument_token == 111
 
 
@@ -671,6 +684,303 @@ def test_market_data_status_route_returns_safe_fake_status(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_watchlist_validation_reports_valid_sbin_only() -> None:
+    repository = FakeRepository()
+    repository.instruments["NSE:SBIN"] = InstrumentRecord(
+        1,
+        "NSE",
+        "SBIN",
+        111,
+        Decimal("0.05"),
+    )
+    service = WatchlistValidationService(
+        settings=market_settings(
+            market_data_watchlist="NSE:SBIN",
+            market_data_max_instruments=1,
+        ),
+        repository=repository,
+    )
+
+    result = await service.validate()
+
+    assert result.configured_count == 1
+    assert result.resolved_symbols == ["NSE:SBIN"]
+    assert result.ready_for_stream is True
+    assert result.errors == []
+
+
+@pytest.mark.asyncio
+async def test_watchlist_validation_accepts_recommended_twenty_when_synced() -> None:
+    symbols = _recommended_watchlist()
+    repository = FakeRepository()
+    for index, key in enumerate(symbols, start=1):
+        exchange, tradingsymbol = key.split(":", 1)
+        repository.instruments[key] = InstrumentRecord(
+            index,
+            exchange,
+            tradingsymbol,
+            1000 + index,
+            Decimal("0.05"),
+        )
+    service = WatchlistValidationService(
+        settings=market_settings(
+            market_data_watchlist=",".join(symbols),
+            market_data_max_instruments=20,
+        ),
+        repository=repository,
+    )
+
+    result = await service.validate()
+
+    assert result.configured_count == 20
+    assert len(result.resolved_symbols) == 20
+    assert result.ready_for_stream is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("watchlist", "max_instruments", "expected_error", "expected_field"),
+    [
+        (
+            "NSE:SBIN",
+            20,
+            "watchlist_symbols_not_synced",
+            ("missing_symbols", ["NSE:SBIN"]),
+        ),
+        (
+            "NSE:SBIN,NSE:RELIANCE",
+            1,
+            "watchlist_exceeds_configured_maximum",
+            ("over_limit", True),
+        ),
+        (
+            "NSE:SBIN,NSE:SBIN",
+            20,
+            "duplicate_watchlist_symbol",
+            ("duplicate_symbols", ["NSE:SBIN"]),
+        ),
+        (
+            "SBIN",
+            20,
+            "watchlist_entries_must_use_exchange_colon_tradingsymbol",
+            ("invalid_format_symbols", ["SBIN"]),
+        ),
+        (
+            "BSE:SBIN",
+            20,
+            "only_nse_supported_in_current_mvp",
+            ("non_nse_symbols", ["BSE:SBIN"]),
+        ),
+    ],
+)
+async def test_watchlist_validation_reports_all_operator_failures(
+    watchlist: str,
+    max_instruments: int,
+    expected_error: str,
+    expected_field: tuple[str, object],
+) -> None:
+    service = WatchlistValidationService(
+        settings=market_settings(
+            market_data_watchlist=watchlist,
+            market_data_max_instruments=max_instruments,
+        ),
+        repository=FakeRepository(),
+    )
+
+    result = await service.validate()
+    rendered = result.as_dict()
+
+    assert expected_error in result.errors
+    assert rendered[expected_field[0]] == expected_field[1]
+    assert result.ready_for_stream is False
+
+
+@pytest.mark.asyncio
+async def test_watchlist_validation_reports_inactive_instrument() -> None:
+    repository = FakeRepository()
+    repository.instruments["NSE:SBIN"] = InstrumentRecord(
+        1,
+        "NSE",
+        "SBIN",
+        111,
+        Decimal("0.05"),
+        is_active=False,
+    )
+    service = WatchlistValidationService(
+        settings=market_settings(market_data_watchlist="NSE:SBIN"),
+        repository=repository,
+    )
+
+    result = await service.validate()
+
+    assert result.inactive_symbols == ["NSE:SBIN"]
+    assert "watchlist_symbols_inactive" in result.errors
+    assert result.ready_for_stream is False
+
+
+@pytest.mark.asyncio
+async def test_watchlist_file_wins_and_ignores_comments(
+    tmp_path: Path,
+) -> None:
+    watchlist_file = tmp_path / "watchlist.txt"
+    watchlist_file.write_text("# initial list\n\nNSE:SBIN\n", encoding="utf-8")
+    repository = FakeRepository()
+    repository.instruments["NSE:SBIN"] = InstrumentRecord(
+        1,
+        "NSE",
+        "SBIN",
+        111,
+        Decimal("0.05"),
+    )
+    service = WatchlistValidationService(
+        settings=market_settings(
+            market_data_watchlist="NSE:RELIANCE",
+            market_data_watchlist_file=str(watchlist_file),
+        ),
+        repository=repository,
+    )
+
+    result = await service.validate()
+
+    assert result.source == "file"
+    assert result.normalized_symbols == ["NSE:SBIN"]
+    assert "watchlist_file_overrides_environment_string" in result.warnings
+    assert result.ready_for_stream is True
+
+
+@pytest.mark.asyncio
+async def test_stream_readiness_recommends_sync_login_and_ready() -> None:
+    settings = market_settings(market_data_watchlist="NSE:SBIN")
+    missing_repository = FakeRepository()
+    missing = StreamReadinessService(
+        settings=settings,
+        watchlist_service=WatchlistValidationService(
+            settings=settings,
+            repository=missing_repository,
+        ),
+        session_store=FakeBrokerSessionStore(_active_session_record()),
+        stream_status_provider=_FakeStreamStatus(),
+    )
+
+    missing_result = await missing.readiness()
+
+    assert missing_result["ready"] is False
+    assert missing_result["recommended_next_action"] == "run_instrument_sync"
+
+    synced_repository = FakeRepository()
+    synced_repository.instruments["NSE:SBIN"] = InstrumentRecord(
+        1,
+        "NSE",
+        "SBIN",
+        111,
+        Decimal("0.05"),
+    )
+    login = StreamReadinessService(
+        settings=settings,
+        watchlist_service=WatchlistValidationService(
+            settings=settings,
+            repository=synced_repository,
+        ),
+        session_store=FakeBrokerSessionStore(None),
+        stream_status_provider=_FakeStreamStatus(),
+    )
+
+    login_result = await login.readiness()
+
+    assert login_result["ready"] is False
+    assert login_result["recommended_next_action"] == "login_kite"
+
+    ready = StreamReadinessService(
+        settings=settings,
+        watchlist_service=WatchlistValidationService(
+            settings=settings,
+            repository=synced_repository,
+        ),
+        session_store=FakeBrokerSessionStore(_active_session_record()),
+        stream_status_provider=_FakeStreamStatus(),
+    )
+
+    ready_result = await ready.readiness()
+
+    assert ready_result["ready"] is True
+    assert ready_result["can_start_stream"] is True
+    assert ready_result["recommended_next_action"] == "ready_to_start_stream"
+
+
+@pytest.mark.asyncio
+async def test_stream_readiness_is_not_ready_when_process_is_disconnected() -> None:
+    settings = market_settings(market_data_watchlist="NSE:SBIN")
+    repository = FakeRepository()
+    repository.instruments["NSE:SBIN"] = InstrumentRecord(
+        1,
+        "NSE",
+        "SBIN",
+        111,
+        Decimal("0.05"),
+    )
+    service = StreamReadinessService(
+        settings=settings,
+        watchlist_service=WatchlistValidationService(
+            settings=settings,
+            repository=repository,
+        ),
+        session_store=FakeBrokerSessionStore(_active_session_record()),
+        stream_status_provider=_FakeStreamStatus(running=True, connected=False),
+    )
+
+    result = await service.readiness()
+
+    assert result["ready"] is False
+    assert result["can_start_stream"] is False
+    assert result["recommended_next_action"] == "inspect_stream_error_before_restart"
+
+
+def test_watchlist_validation_route_requires_operator_token(monkeypatch) -> None:
+    monkeypatch.setattr(dependencies.settings, "operator_auth_token", "operator-secret")
+
+    class RouteValidation:
+        async def validate(self) -> object:
+            raise AssertionError("operator dependency should reject first")
+
+    app.dependency_overrides[get_watchlist_validation_service] = lambda: RouteValidation()
+    try:
+        client = TestClient(app)
+        response = client.get("/api/v1/market-data/watchlist/validate")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 401
+
+
+def test_stream_readiness_route_returns_machine_readable_diagnostics(monkeypatch) -> None:
+    monkeypatch.setattr(dependencies.settings, "operator_auth_token", "operator-secret")
+
+    class RouteReadiness:
+        async def readiness(self) -> dict[str, object]:
+            return {
+                "ready": False,
+                "can_start_stream": False,
+                "missing_symbols": ["NSE:SBIN"],
+                "errors": ["watchlist_symbols_not_synced"],
+                "recommended_next_action": "run_instrument_sync",
+            }
+
+    app.dependency_overrides[get_stream_readiness_service] = lambda: RouteReadiness()
+    try:
+        client = TestClient(app)
+        response = client.get(
+            "/api/v1/market-data/stream/readiness",
+            headers={"X-Operator-Token": "operator-secret"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["recommended_next_action"] == "run_instrument_sync"
+    assert response.json()["missing_symbols"] == ["NSE:SBIN"]
+
+
+@pytest.mark.asyncio
 async def test_encrypted_p03_session_provider_decrypts_only_internally() -> None:
     key = TokenCipher.generate_key()
     cipher = TokenCipher(key)
@@ -747,3 +1057,55 @@ def _tick(time_text: str, price: str, volume: int) -> NormalizedTick:
         volume=volume,
         exchange_timestamp=datetime(2026, 5, 30, hour, minute, second, tzinfo=timezone.utc),
     )
+
+
+class _FakeStreamStatus:
+    def __init__(self, *, running: bool = False, connected: bool = False) -> None:
+        self.running = running
+        self.connected = connected
+
+    def status_dict(self) -> dict[str, object]:
+        return {
+            "running": self.running,
+            "connected": self.connected,
+            "subscribed_symbols": 0,
+            "last_error": None,
+        }
+
+
+def _active_session_record() -> BrokerSessionRecord:
+    return BrokerSessionRecord(
+        id=1,
+        broker=BROKER_ZERODHA,
+        user_id="AB1234",
+        status=STATUS_ACTIVE,
+        login_at=datetime.now(timezone.utc),
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        encrypted_access_token="encrypted",
+        invalidated_at=None,
+    )
+
+
+def _recommended_watchlist() -> list[str]:
+    return [
+        "NSE:SBIN",
+        "NSE:RELIANCE",
+        "NSE:HDFCBANK",
+        "NSE:ICICIBANK",
+        "NSE:AXISBANK",
+        "NSE:KOTAKBANK",
+        "NSE:INFY",
+        "NSE:TCS",
+        "NSE:HCLTECH",
+        "NSE:TECHM",
+        "NSE:BHARTIARTL",
+        "NSE:LT",
+        "NSE:ITC",
+        "NSE:TATAMOTORS",
+        "NSE:MARUTI",
+        "NSE:SUNPHARMA",
+        "NSE:HINDUNILVR",
+        "NSE:BAJFINANCE",
+        "NSE:NTPC",
+        "NSE:POWERGRID",
+    ]

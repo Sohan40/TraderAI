@@ -6,8 +6,11 @@ from collections import Counter
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
+from app.analysis.feature_builder import build_feature_input
+from app.analysis.indicators import IST, NSE_OPEN, candle_continuity_ok
 from app.analysis.schemas import CompletedBar
 from app.core.config import Settings
+from app.market_data.watchlist_validation import strict_configured_watchlist
 from app.scanners.exceptions import ScannerConfigError, ScannerDisabledError, ScannerInputError
 from app.scanners.repository import ScannerRepository
 from app.scanners.schemas import (
@@ -15,8 +18,10 @@ from app.scanners.schemas import (
     P05_STRATEGIES,
     REJECTED_SIGNAL,
     SCANNER_TIMEFRAME,
+    ScannerBatchResult,
     ScannerConfig,
     ScannerRunResult,
+    ScannerSymbolResult,
 )
 from app.scanners.strategies import evaluate_strategy
 
@@ -44,7 +49,7 @@ class ScannerService:
             "enabled": self._config.enabled,
             "observation_mode": self._config.observation_mode,
             "strategies": self._config.strategies,
-            "auto_loop": False,
+            "auto_loop": self._settings.scanner_auto_loop_enabled,
         }
 
     async def run_once(
@@ -61,46 +66,19 @@ class ScannerService:
         evaluated = inserted = duplicates = candidates = rejected = 0
         veto_counter: Counter[str] = Counter()
         for current_symbol in symbols:
-            bars = await self._repository.load_completed_bars(
+            symbol_result, symbol_vetoes = await self._run_symbol(
                 symbol=current_symbol,
                 timeframe=timeframe,
-                limit=SCANNER_HISTORY_BAR_LIMIT,
-            )
-            if not bars:
-                continue
-            is_stale = self._latest_completed_bar_is_stale(
-                bars=bars,
                 replay_run_id=replay_run_id,
+                store_rejections=True,
+                dry_run=False,
             )
-            benchmark_bars = None
-            if self._config.benchmark_symbol:
-                benchmark_bars = await self._repository.load_completed_bars(
-                    symbol=self._config.benchmark_symbol,
-                    timeframe=timeframe,
-                    limit=SCANNER_HISTORY_BAR_LIMIT,
-                )
-            for strategy_name in self._config.strategies:
-                evaluation = evaluate_strategy(
-                    strategy_name=strategy_name,
-                    instrument_id=bars[-1].instrument_id,
-                    symbol=current_symbol,
-                    timeframe=timeframe,
-                    bars=bars,
-                    config=self._config,
-                    benchmark_bars=benchmark_bars,
-                    quote_context=None,
-                    replay_run_id=replay_run_id,
-                    is_stale=is_stale,
-                )
-                evaluated += 1
-                candidates += int(evaluation.status == CANDIDATE)
-                rejected += int(evaluation.status == REJECTED_SIGNAL)
-                veto_counter.update(evaluation.veto_reasons)
-                if await self._repository.insert_signal(evaluation):
-                    inserted += 1
-                else:
-                    duplicates += 1
-                    veto_counter.update(["duplicate_signal"])
+            evaluated += symbol_result.evaluated
+            inserted += symbol_result.inserted
+            duplicates += symbol_result.duplicates
+            candidates += symbol_result.candidates
+            rejected += symbol_result.rejected
+            veto_counter.update(symbol_vetoes)
         return ScannerRunResult(
             evaluated=evaluated,
             inserted=inserted,
@@ -108,6 +86,62 @@ class ScannerService:
             candidates=candidates,
             rejected=rejected,
             veto_counts=dict(sorted(veto_counter.items())),
+        )
+
+    async def run_batch(
+        self,
+        *,
+        symbols: list[str] | None = None,
+        timeframe: str = SCANNER_TIMEFRAME,
+        store_rejections: bool = True,
+        dry_run: bool = False,
+        max_symbols: int | None = None,
+        min_candles: int = 0,
+        require_session_start: bool = False,
+        require_continuity: bool = False,
+    ) -> ScannerBatchResult:
+        """Scan multiple symbols over stored completed candles only."""
+        self._validate_timeframe(timeframe)
+        if not self._config.enabled:
+            raise ScannerDisabledError("Scanner is disabled.")
+        selected = symbols or [
+            item.key for item in strict_configured_watchlist(self._settings)
+        ]
+        normalized = _normalize_symbols(selected)
+        limit = max_symbols or self._settings.market_data_max_instruments
+        if limit < 1 or len(normalized) > limit:
+            raise ScannerInputError("Scanner batch exceeds configured symbol maximum.")
+        started_at = self._now_provider()
+        per_symbol: list[ScannerSymbolResult] = []
+        errors: dict[str, str] = {}
+        for symbol in normalized:
+            try:
+                result, _ = await self._run_symbol(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    replay_run_id=None,
+                    store_rejections=store_rejections,
+                    dry_run=dry_run,
+                    min_candles=min_candles,
+                    require_session_start=require_session_start,
+                    require_continuity=require_continuity,
+                )
+            except Exception:
+                result = ScannerSymbolResult(symbol=symbol, error="symbol_scan_failed")
+                errors[symbol] = "symbol_scan_failed"
+            per_symbol.append(result)
+        finished_at = self._now_provider()
+        return ScannerBatchResult(
+            evaluated_symbols=len(normalized),
+            total_evaluated=sum(item.evaluated for item in per_symbol),
+            total_inserted=sum(item.inserted for item in per_symbol),
+            total_duplicates=sum(item.duplicates for item in per_symbol),
+            total_candidates=sum(item.candidates for item in per_symbol),
+            total_rejected=sum(item.rejected for item in per_symbol),
+            per_symbol=per_symbol,
+            errors=errors,
+            started_at=started_at,
+            finished_at=finished_at,
         )
 
     async def run_replay(
@@ -191,6 +225,96 @@ class ScannerService:
             now = now.replace(tzinfo=timezone.utc)
         return now.astimezone(timezone.utc) > stale_after.astimezone(timezone.utc)
 
+    async def _run_symbol(
+        self,
+        *,
+        symbol: str,
+        timeframe: str,
+        replay_run_id: str | None,
+        store_rejections: bool,
+        dry_run: bool,
+        min_candles: int = 0,
+        require_session_start: bool = False,
+        require_continuity: bool = False,
+    ) -> tuple[ScannerSymbolResult, Counter[str]]:
+        bars = await self._repository.load_completed_bars(
+            symbol=symbol,
+            timeframe=timeframe,
+            limit=SCANNER_HISTORY_BAR_LIMIT,
+        )
+        if not bars:
+            return ScannerSymbolResult(symbol=symbol, skipped_reason="no_completed_candles"), Counter()
+        current_session = build_feature_input(bars).current_session_bars
+        if min_candles and len(current_session) < min_candles:
+            return (
+                ScannerSymbolResult(symbol=symbol, skipped_reason="insufficient_session_candles"),
+                Counter(),
+            )
+        if require_session_start and (
+            not current_session
+            or current_session[0].started_at.astimezone(IST).time() != NSE_OPEN
+        ):
+            return (
+                ScannerSymbolResult(symbol=symbol, skipped_reason="session_start_missing"),
+                Counter(),
+            )
+        if require_continuity and not candle_continuity_ok(
+            current_session,
+            timeframe=timeframe,
+        ):
+            return (
+                ScannerSymbolResult(symbol=symbol, skipped_reason="session_candle_gap"),
+                Counter(),
+            )
+        is_stale = self._latest_completed_bar_is_stale(
+            bars=bars,
+            replay_run_id=replay_run_id,
+        )
+        benchmark_bars = None
+        if self._config.benchmark_symbol:
+            benchmark_bars = await self._repository.load_completed_bars(
+                symbol=self._config.benchmark_symbol,
+                timeframe=timeframe,
+                limit=SCANNER_HISTORY_BAR_LIMIT,
+            )
+        evaluated = inserted = duplicates = candidates = rejected = 0
+        veto_counter: Counter[str] = Counter()
+        for strategy_name in self._config.strategies:
+            evaluation = evaluate_strategy(
+                strategy_name=strategy_name,
+                instrument_id=bars[-1].instrument_id,
+                symbol=symbol,
+                timeframe=timeframe,
+                bars=bars,
+                config=self._config,
+                benchmark_bars=benchmark_bars,
+                quote_context=None,
+                replay_run_id=replay_run_id,
+                is_stale=is_stale,
+            )
+            evaluated += 1
+            candidates += int(evaluation.status == CANDIDATE)
+            rejected += int(evaluation.status == REJECTED_SIGNAL)
+            veto_counter.update(evaluation.veto_reasons)
+            should_persist = evaluation.status == CANDIDATE or store_rejections
+            if should_persist and not dry_run:
+                if await self._repository.insert_signal(evaluation):
+                    inserted += 1
+                else:
+                    duplicates += 1
+                    veto_counter.update(["duplicate_signal"])
+        return (
+            ScannerSymbolResult(
+                symbol=symbol,
+                evaluated=evaluated,
+                inserted=inserted,
+                duplicates=duplicates,
+                candidates=candidates,
+                rejected=rejected,
+            ),
+            veto_counter,
+        )
+
     def _validate_timeframe(self, timeframe: str) -> None:
         if timeframe != SCANNER_TIMEFRAME:
             raise ScannerInputError("Scanner supports only 1minute completed candles in P05.")
@@ -233,3 +357,21 @@ def scanner_config_from_settings(settings: Settings) -> ScannerConfig:
         require_spread_for_future_live=settings.scanner_require_spread_for_future_live,
         benchmark_symbol=settings.scanner_benchmark_symbol or None,
     )
+
+
+def _normalize_symbols(symbols: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in symbols:
+        value = raw.strip().upper()
+        if not value or value.count(":") != 1:
+            raise ScannerInputError("Scanner symbols must use EXCHANGE:TRADINGSYMBOL.")
+        exchange, tradingsymbol = value.split(":", 1)
+        if exchange != "NSE" or not tradingsymbol:
+            raise ScannerInputError("Scanner batch supports NSE symbols only.")
+        if value not in seen:
+            seen.add(value)
+            normalized.append(value)
+    if not normalized:
+        raise ScannerInputError("Scanner batch symbol list is empty.")
+    return normalized

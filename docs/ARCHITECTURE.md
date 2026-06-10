@@ -102,6 +102,12 @@ P05 adds deterministic indicators and scanner observations over completed stored
 
 P05 session-based strategies require complete stored current-session context from the NSE 09:15 IST open. VWAP pullback candidates require continuous one-minute candles from 09:15 through the evaluated bar, and opening-range breakout candidates require the configured opening-range window from 09:15 to be complete. Until historical backfill exists, late-start streams generate data-quality rejections rather than partial-session candidates.
 
+P05.5-P05.7 add an operational layer without widening scanner authority. Watchlist
+validation and stream readiness use configuration, local instrument rows, local
+session metadata, and process status only. Scanner batch and auto-loop paths use
+completed stored candles and immutable signal persistence only. The auto loop is
+disabled by default and has no application-start hook.
+
 P06 adds deterministic paper replay only. The paper engine is disabled by default, consumes only persisted P05 `CANDIDATE` signals, ignores `REJECTED_SIGNAL`, simulates long-only limit entries and exits from completed one-minute candles, and stores simulated order/event/trade/journal rows. `OFF` and `SHADOW` create no paper orders or fills. `LIVE` raises an explicit disabled/not-implemented error; no real execution gateway is introduced.
 
 ### Static-IP/execution isolation

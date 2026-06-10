@@ -15,3 +15,15 @@ class ScannerConfigError(ScannerError):
 
 class ScannerInputError(ScannerError):
     """Raised for unsupported scanner input."""
+
+
+class ScannerAutoLoopDisabledError(ScannerError):
+    """Raised when the scanner auto-loop is disabled."""
+
+
+class ScannerAutoLoopRunningError(ScannerError):
+    """Raised when attempting to start an already running auto-loop."""
+
+
+class ScannerAutoLoopBusyError(ScannerError):
+    """Raised when an auto-loop scan is already in progress."""

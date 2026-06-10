@@ -19,13 +19,18 @@ from app.market_data.repository import (
     SQLAlchemyMarketDataRepository,
     SessionFactoryMarketDataRepository,
 )
+from app.market_data.stream_readiness import StreamReadinessService
+from app.market_data.watchlist_validation import WatchlistValidationService
 from app.market_data.websocket_service import MarketDataStreamService
+from app.ops.morning_readiness import MorningReadinessService
 from app.paper.repository import SQLAlchemyPaperRepository
 from app.paper.service import PaperService
-from app.scanners.repository import SQLAlchemyScannerRepository
+from app.scanners.auto_loop import ScannerAutoLoopService
+from app.scanners.repository import SQLAlchemyScannerRepository, SessionFactoryScannerRepository
 from app.scanners.service import ScannerService
 
 _market_data_stream_service: MarketDataStreamService | None = None
+_scanner_auto_loop_service: ScannerAutoLoopService | None = None
 
 
 def require_operator_token(x_operator_token: str | None = Header(default=None)) -> None:
@@ -95,6 +100,16 @@ async def get_instrument_sync_service(
     )
 
 
+async def get_watchlist_validation_service(
+    session: AsyncSession = Depends(get_session),
+) -> WatchlistValidationService:
+    """Build DB-only watchlist diagnostics."""
+    return WatchlistValidationService(
+        settings=settings,
+        repository=SQLAlchemyMarketDataRepository(session),
+    )
+
+
 async def get_market_data_stream_service() -> MarketDataStreamService:
     """Return a process-local stream controller for P04."""
     global _market_data_stream_service
@@ -112,6 +127,22 @@ async def get_market_data_stream_service() -> MarketDataStreamService:
     return _market_data_stream_service
 
 
+async def get_stream_readiness_service(
+    session: AsyncSession = Depends(get_session),
+    stream_service: MarketDataStreamService = Depends(get_market_data_stream_service),
+) -> StreamReadinessService:
+    """Build DB-only stream readiness diagnostics."""
+    return StreamReadinessService(
+        settings=settings,
+        watchlist_service=WatchlistValidationService(
+            settings=settings,
+            repository=SQLAlchemyMarketDataRepository(session),
+        ),
+        session_store=SQLAlchemySessionStore(session),
+        stream_status_provider=stream_service,
+    )
+
+
 async def get_scanner_service(
     session: AsyncSession = Depends(get_session),
 ) -> ScannerService:
@@ -119,6 +150,49 @@ async def get_scanner_service(
     return ScannerService(
         settings=settings,
         repository=SQLAlchemyScannerRepository(session),
+    )
+
+
+async def get_scanner_auto_loop_service() -> ScannerAutoLoopService:
+    """Return the process-local disabled-by-default scanner scheduler."""
+    global _scanner_auto_loop_service
+    if _scanner_auto_loop_service is None:
+        _scanner_auto_loop_service = ScannerAutoLoopService(
+            settings=settings,
+            scanner_service=ScannerService(
+                settings=settings,
+                repository=SessionFactoryScannerRepository(async_session_factory),
+            ),
+        )
+    return _scanner_auto_loop_service
+
+
+async def get_morning_readiness_service(
+    session: AsyncSession = Depends(get_session),
+    stream_service: MarketDataStreamService = Depends(get_market_data_stream_service),
+    auto_loop_service: ScannerAutoLoopService = Depends(get_scanner_auto_loop_service),
+) -> MorningReadinessService:
+    """Build local-only operational readiness aggregation."""
+    market_repository = SQLAlchemyMarketDataRepository(session)
+    watchlist_service = WatchlistValidationService(
+        settings=settings,
+        repository=market_repository,
+    )
+    stream_readiness_service = StreamReadinessService(
+        settings=settings,
+        watchlist_service=watchlist_service,
+        session_store=SQLAlchemySessionStore(session),
+        stream_status_provider=stream_service,
+    )
+    return MorningReadinessService(
+        settings=settings,
+        watchlist_service=watchlist_service,
+        stream_readiness_service=stream_readiness_service,
+        scanner_service=ScannerService(
+            settings=settings,
+            repository=SQLAlchemyScannerRepository(session),
+        ),
+        auto_loop_service=auto_loop_service,
     )
 
 

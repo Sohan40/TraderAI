@@ -22,7 +22,10 @@ from app.market_data.exceptions import (
 from app.market_data.kite_market_client import KiteMarketClient, KiteQuoteStream
 from app.market_data.repository import MarketDataRepository
 from app.market_data.schemas import InstrumentRecord, NormalizedTick, SUPPORTED_STREAM_MODES, StreamStatus
-from app.market_data.watchlist import parse_watchlist
+from app.market_data.watchlist_validation import (
+    configured_watchlist_entries,
+    strict_configured_watchlist,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,13 +69,39 @@ class MarketDataStreamService:
         if self._stream is not None:
             return self.status_dict()
 
-        watchlist = parse_watchlist(
-            self._settings.market_data_watchlist,
+        watchlist = strict_configured_watchlist(self._settings)
+        inspected = await self._repository.inspect_watchlist(watchlist)
+        inspected_by_key = {record.key: record for record in inspected}
+        missing = [symbol.key for symbol in watchlist if symbol.key not in inspected_by_key]
+        inactive = [
+            symbol.key
+            for symbol in watchlist
+            if symbol.key in inspected_by_key and not inspected_by_key[symbol.key].is_active
+        ]
+        resolved = [
+            inspected_by_key[symbol.key]
+            for symbol in watchlist
+            if symbol.key in inspected_by_key and inspected_by_key[symbol.key].is_active
+        ]
+        logger.info(
+            "stream readiness configured_count=%s resolved_count=%s max_instruments=%s "
+            "missing_symbols=%s inactive_symbols=%s",
+            len(watchlist),
+            len(resolved),
             self._settings.market_data_max_instruments,
+            ",".join(missing),
+            ",".join(inactive),
         )
-        resolved = await self._repository.resolve_watchlist(watchlist)
-        if len(resolved) != len(watchlist):
-            raise WatchlistError("Configured watchlist symbols must be synced before streaming.")
+        if missing:
+            raise WatchlistError(
+                "Watchlist symbols must be synced before streaming; "
+                f"missing_symbols: {','.join(missing)}"
+            )
+        if inactive:
+            raise WatchlistError(
+                "Watchlist contains inactive instruments; "
+                f"inactive_symbols: {','.join(inactive)}"
+            )
 
         try:
             kite_session = await self._session_provider.get_active_session()
@@ -147,12 +176,7 @@ class MarketDataStreamService:
             self._stale_logged = True
         if not stale:
             self._stale_logged = False
-        configured_count = len(
-            parse_watchlist(
-                self._settings.market_data_watchlist,
-                self._settings.market_data_max_instruments,
-            )
-        )
+        configured_count = len(configured_watchlist_entries(self._settings))
         return StreamStatus(
             enabled=self._settings.market_data_enabled,
             websocket_enabled=self._settings.kite_websocket_enabled,

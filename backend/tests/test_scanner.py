@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -14,13 +15,23 @@ from app.analysis.feature_builder import build_feature_snapshot, build_indicator
 from app.analysis.indicators import atr_wilder, candle_continuity_ok, ema, rsi_wilder, spread_pct, vwap
 from app.analysis.schemas import CompletedBar, QuoteContext
 from app.api import dependencies
-from app.api.dependencies import get_scanner_service
+from app.api.dependencies import get_scanner_auto_loop_service, get_scanner_service
 from app.core.config import Settings
 from app.main import app
-from app.scanners.exceptions import ScannerDisabledError, ScannerInputError
+from app.scanners.auto_loop import ScannerAutoLoopService
+from app.scanners.exceptions import (
+    ScannerAutoLoopBusyError,
+    ScannerAutoLoopDisabledError,
+    ScannerDisabledError,
+    ScannerInputError,
+)
 from app.scanners.repository import InMemoryScannerRepository
 from app.scanners.replay import _run as run_replay
-from app.scanners.schemas import CANDIDATE, REJECTED_SIGNAL
+from app.scanners.schemas import (
+    CANDIDATE,
+    REJECTED_SIGNAL,
+    ScannerBatchResult,
+)
 from app.scanners.service import ScannerService, scanner_config_from_settings
 from app.scanners.strategies import evaluate_strategy
 from app.scanners.vetoes import (
@@ -613,6 +624,304 @@ async def test_scanner_service_refuses_unsupported_timeframe() -> None:
 
 
 @pytest.mark.asyncio
+async def test_scanner_batch_uses_configured_watchlist_and_returns_per_symbol_results() -> None:
+    bars = _candidate_bars()
+    repository = InMemoryScannerRepository(
+        {
+            "NSE:SBIN": bars,
+            "NSE:RELIANCE": bars,
+        }
+    )
+    service = ScannerService(
+        settings=Settings(
+            scanner_enabled=True,
+            scanner_strategies="opening_range_breakout_long",
+            scanner_require_spread_for_future_live=False,
+            market_data_watchlist="NSE:SBIN,NSE:RELIANCE",
+        ),
+        repository=repository,
+        now_provider=lambda: _fresh_now(bars),
+    )
+
+    result = await service.run_batch()
+
+    assert result.evaluated_symbols == 2
+    assert result.total_evaluated == 2
+    assert result.total_candidates == 2
+    assert result.total_inserted == 2
+    assert [item.symbol for item in result.per_symbol] == ["NSE:SBIN", "NSE:RELIANCE"]
+    assert result.errors == {}
+
+
+@pytest.mark.asyncio
+async def test_scanner_batch_continues_after_one_symbol_failure() -> None:
+    bars = _candidate_bars()
+
+    class FailingRepository(InMemoryScannerRepository):
+        async def load_completed_bars(
+            self,
+            *,
+            symbol: str,
+            timeframe: str,
+            limit: int,
+            start: datetime | None = None,
+            end: datetime | None = None,
+        ) -> list[CompletedBar]:
+            if symbol == "NSE:RELIANCE":
+                raise RuntimeError("fixture failure")
+            return await super().load_completed_bars(
+                symbol=symbol,
+                timeframe=timeframe,
+                limit=limit,
+                start=start,
+                end=end,
+            )
+
+    repository = FailingRepository({"NSE:SBIN": bars, "NSE:RELIANCE": bars})
+    service = ScannerService(
+        settings=Settings(
+            scanner_enabled=True,
+            scanner_strategies="opening_range_breakout_long",
+            scanner_require_spread_for_future_live=False,
+        ),
+        repository=repository,
+        now_provider=lambda: _fresh_now(bars),
+    )
+
+    result = await service.run_batch(symbols=["NSE:SBIN", "NSE:RELIANCE"])
+
+    assert result.total_candidates == 1
+    assert result.errors == {"NSE:RELIANCE": "symbol_scan_failed"}
+    assert result.per_symbol[1].error == "symbol_scan_failed"
+
+
+@pytest.mark.asyncio
+async def test_scanner_batch_dry_run_does_not_insert() -> None:
+    bars = _candidate_bars()
+    repository = InMemoryScannerRepository({"NSE:SBIN": bars})
+    service = ScannerService(
+        settings=Settings(
+            scanner_enabled=True,
+            scanner_strategies="opening_range_breakout_long",
+            scanner_require_spread_for_future_live=False,
+        ),
+        repository=repository,
+        now_provider=lambda: _fresh_now(bars),
+    )
+
+    result = await service.run_batch(symbols=["NSE:SBIN"], dry_run=True)
+
+    assert result.total_candidates == 1
+    assert result.total_inserted == 0
+    assert repository.signals == {}
+
+
+@pytest.mark.asyncio
+async def test_scanner_batch_rejects_malformed_explicit_symbol() -> None:
+    service = ScannerService(
+        settings=Settings(scanner_enabled=True),
+        repository=InMemoryScannerRepository(),
+    )
+
+    with pytest.raises(ScannerInputError):
+        await service.run_batch(symbols=["NSE:SBIN:BAD"])
+
+
+@pytest.mark.asyncio
+async def test_scanner_batch_can_suppress_rejected_signal_persistence() -> None:
+    bars = _bars(count=51)
+    repository = InMemoryScannerRepository({"NSE:SBIN": bars})
+    service = ScannerService(
+        settings=Settings(
+            scanner_enabled=True,
+            scanner_strategies="opening_range_breakout_long",
+            scanner_require_spread_for_future_live=False,
+        ),
+        repository=repository,
+        now_provider=lambda: _fresh_now(bars),
+    )
+
+    result = await service.run_batch(
+        symbols=["NSE:SBIN"],
+        store_rejections=False,
+    )
+
+    assert result.total_rejected == 1
+    assert result.total_inserted == 0
+    assert repository.signals == {}
+
+
+@pytest.mark.asyncio
+async def test_auto_loop_disabled_refuses_start_and_run_now() -> None:
+    service = ScannerAutoLoopService(
+        settings=Settings(scanner_enabled=True, scanner_auto_loop_enabled=False),
+        scanner_service=ScannerService(
+            settings=Settings(scanner_enabled=True),
+            repository=InMemoryScannerRepository(),
+        ),
+    )
+
+    with pytest.raises(ScannerAutoLoopDisabledError):
+        await service.start()
+    with pytest.raises(ScannerAutoLoopDisabledError):
+        await service.run_now()
+
+
+@pytest.mark.asyncio
+async def test_auto_loop_start_stop_status_and_candidate_persistence() -> None:
+    bars = _candidate_bars()
+    settings = Settings(
+        scanner_enabled=True,
+        scanner_strategies="opening_range_breakout_long",
+        scanner_require_spread_for_future_live=False,
+        scanner_auto_loop_enabled=True,
+        scanner_auto_loop_interval_seconds=3600,
+        scanner_auto_loop_min_candles=51,
+        market_data_watchlist="NSE:SBIN",
+    )
+    repository = InMemoryScannerRepository({"NSE:SBIN": bars})
+    scanner = ScannerService(
+        settings=settings,
+        repository=repository,
+        now_provider=lambda: _fresh_now(bars),
+    )
+    service = ScannerAutoLoopService(
+        settings=settings,
+        scanner_service=scanner,
+        now_provider=lambda: datetime(2026, 6, 3, 5, 0, tzinfo=timezone.utc),
+    )
+
+    started = await service.start()
+    await asyncio.sleep(0)
+    stopped = await service.stop()
+
+    assert started["enabled"] is True
+    assert started["running"] is True
+    assert stopped["running"] is False
+    assert stopped["last_summary"] is not None
+    assert len(repository.signals) == 1
+
+    stopped_again = await service.stop()
+    assert stopped_again["running"] is False
+
+
+@pytest.mark.asyncio
+async def test_auto_loop_skips_insufficient_candles_and_respects_time_window() -> None:
+    bars = _bars(count=10)
+    settings = Settings(
+        scanner_enabled=True,
+        scanner_auto_loop_enabled=True,
+        scanner_auto_loop_min_candles=51,
+        market_data_watchlist="NSE:SBIN",
+    )
+    scanner = ScannerService(
+        settings=settings,
+        repository=InMemoryScannerRepository({"NSE:SBIN": bars}),
+        now_provider=lambda: _fresh_now(bars),
+    )
+    in_window = ScannerAutoLoopService(
+        settings=settings,
+        scanner_service=scanner,
+        now_provider=lambda: datetime(2026, 6, 3, 5, 0, tzinfo=timezone.utc),
+    )
+
+    summary = await in_window.run_now()
+
+    assert summary["skipped"] is False
+    per_symbol = cast(list[dict[str, object]], summary["per_symbol"])
+    assert per_symbol[0]["skipped_reason"] == "insufficient_session_candles"
+
+    before_window = ScannerAutoLoopService(
+        settings=settings,
+        scanner_service=scanner,
+        now_provider=lambda: datetime(2026, 6, 3, 4, 0, tzinfo=timezone.utc),
+    )
+    after_window = ScannerAutoLoopService(
+        settings=settings,
+        scanner_service=scanner,
+        now_provider=lambda: datetime(2026, 6, 3, 10, 0, tzinfo=timezone.utc),
+    )
+
+    assert (await before_window.run_now())["skip_reason"] == "before_start_time"
+    assert (await after_window.run_now())["skip_reason"] == "after_stop_time"
+
+
+@pytest.mark.asyncio
+async def test_auto_loop_prevents_overlapping_runs() -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    now = datetime(2026, 6, 3, 5, 0, tzinfo=timezone.utc)
+
+    class BlockingScanner:
+        async def run_batch(self, **_kwargs: object) -> ScannerBatchResult:
+            entered.set()
+            await release.wait()
+            return ScannerBatchResult(
+                evaluated_symbols=0,
+                total_evaluated=0,
+                total_inserted=0,
+                total_duplicates=0,
+                total_candidates=0,
+                total_rejected=0,
+                per_symbol=[],
+                errors={},
+                started_at=now,
+                finished_at=now,
+            )
+
+    settings = Settings(
+        scanner_enabled=True,
+        scanner_auto_loop_enabled=True,
+        market_data_watchlist="NSE:SBIN",
+    )
+    service = ScannerAutoLoopService(
+        settings=settings,
+        scanner_service=cast(ScannerService, BlockingScanner()),
+        now_provider=lambda: now,
+    )
+    first = asyncio.create_task(service.run_now())
+    await entered.wait()
+
+    with pytest.raises(ScannerAutoLoopBusyError):
+        await service.run_now()
+
+    release.set()
+    await first
+
+
+def test_scanner_batch_route_requires_operator_token(monkeypatch) -> None:
+    monkeypatch.setattr(dependencies.settings, "operator_auth_token", "operator-secret")
+    client = TestClient(app)
+
+    response = client.post("/api/v1/scanner/run-batch")
+
+    assert response.status_code == 401
+
+
+def test_auto_loop_status_route_is_operator_protected(monkeypatch) -> None:
+    monkeypatch.setattr(dependencies.settings, "operator_auth_token", "operator-secret")
+
+    class RouteAutoLoop:
+        def status(self) -> dict[str, object]:
+            return {"enabled": False, "running": False, "last_summary": None}
+
+    app.dependency_overrides[get_scanner_auto_loop_service] = lambda: RouteAutoLoop()
+    try:
+        client = TestClient(app)
+        missing = client.get("/api/v1/scanner/auto-loop/status")
+        response = client.get(
+            "/api/v1/scanner/auto-loop/status",
+            headers={"X-Operator-Token": "operator-secret"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert missing.status_code == 401
+    assert response.status_code == 200
+    assert response.json()["running"] is False
+
+
+@pytest.mark.asyncio
 async def test_live_scanner_run_persists_stale_data_veto() -> None:
     bars = _candidate_bars()
     repository = InMemoryScannerRepository({"NSE:SBIN": bars})
@@ -994,7 +1303,28 @@ def test_production_compose_safety_defaults() -> None:
     assert 'TRADING_MODE: "OFF"' in compose
     assert 'LIVE_ARMED: "false"' in compose
     assert 'SCANNER_ENABLED: "${SCANNER_ENABLED:-false}"' in compose
+    assert 'SCANNER_AUTO_LOOP_ENABLED: "${SCANNER_AUTO_LOOP_ENABLED:-false}"' in compose
     assert 'MARKET_DATA_ENABLED: "${MARKET_DATA_ENABLED:-false}"' in compose
+    assert 'PAPER_ENABLED: "${PAPER_ENABLED:-false}"' in compose
+    assert 'PAPER_MODE: "${PAPER_MODE:-OFF}"' in compose
+
+
+def test_scanner_auto_loop_has_no_broker_ai_or_paper_imports() -> None:
+    source = Path("backend/app/scanners/auto_loop.py").read_text(encoding="utf-8").lower()
+    forbidden = (
+        "kiteconnect",
+        "kiteticker",
+        "place_order",
+        "modify_order",
+        "cancel_order",
+        "openai",
+        "langgraph",
+        "kronos",
+        " mcp",
+        "app.paper",
+    )
+
+    assert not any(fragment in source for fragment in forbidden)
 
 
 def _fresh_now(bars: list[CompletedBar]) -> datetime:

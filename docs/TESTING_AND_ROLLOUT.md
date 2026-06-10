@@ -48,6 +48,22 @@ python -m app.scanners.replay --symbol NSE:SBIN --timeframe 1minute --fixture pa
 
 The fixture must contain completed OHLCV rows. Identical fixture/configuration input should produce identical candidate/rejection counts and signal keys.
 
+## P05.5-P05.7 Operations Validation
+
+Validate the configured watchlist and local stream gates before stream start:
+
+```text
+GET /api/v1/market-data/watchlist/validate
+GET /api/v1/market-data/stream/readiness
+GET /api/v1/ops/morning-readiness
+```
+
+Scanner batch and auto-loop validation must prove per-symbol failure isolation,
+no overlapping scheduled runs, completed-candle-only reads, candidate
+persistence, disabled rejection persistence by default, and disabled auto-loop
+defaults. The detailed operator sequence is in
+`docs/WATCHLIST_AND_SCANNER_OPERATIONS.md`.
+
 ## P06 Paper Validation
 
 P06 paper replay is disabled by default with `PAPER_ENABLED=false` and `PAPER_MODE=OFF`. In `PAPER` mode it consumes only persisted P05 `CANDIDATE` signals and completed `1minute` candles. Entry is a simulated long-only limit buy; stop and target are checked on later candles, with stop winning if both stop and target touch in the same candle. If the replay reaches the configured force-flat time, default `15:10` IST, the trade exits at that candle close. If data ends earlier, the trade exits at the last later candle close with `TIME_EXIT`, or records `DATA_ENDED` if no later candle exists.

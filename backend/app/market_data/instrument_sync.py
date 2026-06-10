@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 
 from app.broker.session_provider import AccessSessionProvider
 from app.core.config import Settings
@@ -10,7 +11,10 @@ from app.market_data.exceptions import InstrumentSyncDisabledError, MarketDataSe
 from app.market_data.kite_market_client import KiteMarketClient
 from app.market_data.repository import MarketDataRepository
 from app.market_data.schemas import InstrumentSyncResult
-from app.market_data.watchlist import parse_watchlist
+from app.market_data.watchlist_validation import (
+    WatchlistValidationService,
+    strict_configured_watchlist,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,10 +40,7 @@ class InstrumentSyncService:
         if not self._settings.instrument_sync_enabled:
             raise InstrumentSyncDisabledError("Instrument sync is disabled.")
 
-        watchlist = parse_watchlist(
-            self._settings.market_data_watchlist,
-            self._settings.market_data_max_instruments,
-        )
+        watchlist = strict_configured_watchlist(self._settings)
         try:
             kite_session = await self._session_provider.get_active_session()
         except Exception as exc:
@@ -51,12 +52,20 @@ class InstrumentSyncService:
             access_token=kite_session.access_token,
         )
         result = await self._repository.upsert_instruments(broker_instruments, watchlist)
+        validation = await WatchlistValidationService(
+            settings=self._settings,
+            repository=self._repository,
+        ).validate()
         logger.info(
-            "instrument sync completed fetched=%s inserted=%s updated=%s skipped=%s failed=%s",
+            "instrument sync completed fetched=%s inserted=%s updated=%s skipped=%s "
+            "failed=%s configured=%s resolved=%s missing=%s",
             result.fetched,
             result.inserted,
             result.updated,
             result.skipped,
             result.failed,
+            validation.configured_count,
+            len(validation.resolved_symbols),
+            ",".join(validation.missing_symbols),
         )
-        return result
+        return replace(result, watchlist_validation=validation.as_dict())

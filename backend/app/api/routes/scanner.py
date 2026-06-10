@@ -4,8 +4,20 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from app.api.dependencies import get_scanner_service, require_operator_token
-from app.scanners.exceptions import ScannerConfigError, ScannerDisabledError, ScannerInputError
+from app.api.dependencies import (
+    get_scanner_auto_loop_service,
+    get_scanner_service,
+    require_operator_token,
+)
+from app.scanners.auto_loop import ScannerAutoLoopService
+from app.scanners.exceptions import (
+    ScannerAutoLoopBusyError,
+    ScannerAutoLoopDisabledError,
+    ScannerAutoLoopRunningError,
+    ScannerConfigError,
+    ScannerDisabledError,
+    ScannerInputError,
+)
 from app.scanners.service import ScannerService
 
 router = APIRouter(
@@ -44,6 +56,85 @@ async def scanner_run_once(
         "rejected": result.rejected,
         "veto_counts": result.veto_counts,
     }
+
+
+@router.post("/run-batch")
+async def scanner_run_batch(
+    symbols: list[str] | None = Query(default=None),
+    timeframe: str = Query(default="1minute"),
+    store_rejections: bool = Query(default=True),
+    dry_run: bool = Query(default=False),
+    service: ScannerService = Depends(get_scanner_service),
+) -> dict[str, object]:
+    """Scan configured or explicit symbols using stored completed candles."""
+    try:
+        result = await service.run_batch(
+            symbols=symbols,
+            timeframe=timeframe,
+            store_rejections=store_rejections,
+            dry_run=dry_run,
+        )
+    except ScannerDisabledError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="scanner disabled") from exc
+    except ScannerInputError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except ScannerConfigError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="scanner config invalid",
+        ) from exc
+    return result.as_dict()
+
+
+@router.post("/auto-loop/start")
+async def scanner_auto_loop_start(
+    service: ScannerAutoLoopService = Depends(get_scanner_auto_loop_service),
+) -> dict[str, object]:
+    """Start the disabled-by-default scanner loop."""
+    try:
+        return await service.start()
+    except (ScannerDisabledError, ScannerAutoLoopDisabledError) as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except ScannerAutoLoopRunningError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ScannerConfigError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@router.post("/auto-loop/stop")
+async def scanner_auto_loop_stop(
+    service: ScannerAutoLoopService = Depends(get_scanner_auto_loop_service),
+) -> dict[str, object]:
+    """Stop the scanner loop idempotently."""
+    return await service.stop()
+
+
+@router.get("/auto-loop/status")
+async def scanner_auto_loop_status(
+    service: ScannerAutoLoopService = Depends(get_scanner_auto_loop_service),
+) -> dict[str, object]:
+    """Return non-sensitive scanner loop status."""
+    return service.status()
+
+
+@router.post("/auto-loop/run-now")
+async def scanner_auto_loop_run_now(
+    service: ScannerAutoLoopService = Depends(get_scanner_auto_loop_service),
+) -> dict[str, object]:
+    """Run one strict auto-loop batch for controlled testing."""
+    try:
+        return await service.run_now()
+    except (ScannerDisabledError, ScannerAutoLoopDisabledError) as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except ScannerAutoLoopBusyError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ScannerInputError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    except ScannerConfigError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
 
 @router.get("/signals")

@@ -47,6 +47,7 @@ class InstrumentSyncResult:
     updated: int
     skipped: int
     failed: int
+    watchlist_validation: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)

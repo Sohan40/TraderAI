@@ -72,3 +72,61 @@ class ScannerRunResult:
     candidates: int
     rejected: int
     veto_counts: dict[str, int]
+
+
+@dataclass(frozen=True)
+class ScannerSymbolResult:
+    """One symbol result inside a batch or auto-loop run."""
+
+    symbol: str
+    evaluated: int = 0
+    inserted: int = 0
+    duplicates: int = 0
+    candidates: int = 0
+    rejected: int = 0
+    skipped_reason: str | None = None
+    error: str | None = None
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "symbol": self.symbol,
+            "evaluated": self.evaluated,
+            "inserted": self.inserted,
+            "duplicates": self.duplicates,
+            "candidates": self.candidates,
+            "rejected": self.rejected,
+            "skipped_reason": self.skipped_reason,
+            "error": self.error,
+        }
+
+
+@dataclass(frozen=True)
+class ScannerBatchResult:
+    """Non-sensitive scanner batch summary."""
+
+    evaluated_symbols: int
+    total_evaluated: int
+    total_inserted: int
+    total_duplicates: int
+    total_candidates: int
+    total_rejected: int
+    per_symbol: list[ScannerSymbolResult]
+    errors: dict[str, str]
+    started_at: datetime
+    finished_at: datetime
+
+    def as_dict(self) -> dict[str, object]:
+        duration_ms = int((self.finished_at - self.started_at).total_seconds() * 1000)
+        return {
+            "evaluated_symbols": self.evaluated_symbols,
+            "total_evaluated": self.total_evaluated,
+            "total_inserted": self.total_inserted,
+            "total_duplicates": self.total_duplicates,
+            "total_candidates": self.total_candidates,
+            "total_rejected": self.total_rejected,
+            "per_symbol": [item.as_dict() for item in self.per_symbol],
+            "errors": self.errors,
+            "started_at": self.started_at.isoformat(),
+            "finished_at": self.finished_at.isoformat(),
+            "duration_ms": duration_ms,
+        }

@@ -30,6 +30,12 @@ class MarketDataRepository(Protocol):
     ) -> list[InstrumentRecord]:
         """Resolve configured symbols from local instrument storage."""
 
+    async def inspect_watchlist(
+        self,
+        watchlist: Sequence[WatchlistSymbol],
+    ) -> list[InstrumentRecord]:
+        """Return configured local instruments including inactive rows."""
+
     async def save_completed_candles(self, completed: Sequence[CompletedCandle]) -> int:
         """Persist completed candles."""
 
@@ -128,6 +134,32 @@ class SQLAlchemyMarketDataRepository:
                 )
         return records
 
+    async def inspect_watchlist(
+        self,
+        watchlist: Sequence[WatchlistSymbol],
+    ) -> list[InstrumentRecord]:
+        records: list[InstrumentRecord] = []
+        for symbol in watchlist:
+            result = await self._session.execute(
+                select(instruments).where(
+                    instruments.c.exchange == symbol.exchange,
+                    instruments.c.tradingsymbol == symbol.tradingsymbol,
+                )
+            )
+            row = result.mappings().first()
+            if row:
+                records.append(
+                    InstrumentRecord(
+                        id=int(row["id"]),
+                        exchange=str(row["exchange"]),
+                        tradingsymbol=str(row["tradingsymbol"]),
+                        instrument_token=int(row["kite_instrument_token"]),
+                        tick_size=Decimal(str(row["tick_size"])),
+                        is_active=bool(row["is_active"]),
+                    )
+                )
+        return records
+
     async def save_completed_candles(self, completed: Sequence[CompletedCandle]) -> int:
         saved = 0
         for candle in completed:
@@ -184,6 +216,13 @@ class SessionFactoryMarketDataRepository:
     ) -> list[InstrumentRecord]:
         async with self._session_factory() as session:
             return await SQLAlchemyMarketDataRepository(session).resolve_watchlist(watchlist)
+
+    async def inspect_watchlist(
+        self,
+        watchlist: Sequence[WatchlistSymbol],
+    ) -> list[InstrumentRecord]:
+        async with self._session_factory() as session:
+            return await SQLAlchemyMarketDataRepository(session).inspect_watchlist(watchlist)
 
     async def save_completed_candles(self, completed: Sequence[CompletedCandle]) -> int:
         async with self._session_factory() as session:

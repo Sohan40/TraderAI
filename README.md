@@ -78,6 +78,9 @@ Kite data is **not** a replacement for company-news or corporate-event research.
 - P03 adds Kite authentication/session handling only, guarded by operator-token protection and disabled by default.
 - P04 adds disabled-by-default read-only Kite market-data scaffolding: instrument sync, a configured NSE watchlist, quote-stream lifecycle controls, and completed one-minute candle storage.
 - P05 adds disabled-by-default deterministic indicators and scanner observations over completed stored candles only.
+- P05.5-P05.7 add operator-only watchlist validation, local stream readiness,
+  multi-symbol scanner batches, a disabled-by-default scanner auto loop, and a
+  morning-readiness report. See `docs/WATCHLIST_AND_SCANNER_OPERATIONS.md`.
 - P06 adds disabled-by-default deterministic paper trading and journal/replay outputs over P05 candidates and stored completed candles only.
 - Live trading remains disabled by default with `TRADING_MODE=OFF` and `LIVE_ARMED=false`.
 - OpenAI, risk-engine, live execution and dashboard implementation phases have not started.

@@ -8,7 +8,7 @@ from typing import Protocol
 
 from sqlalchemy import desc, insert, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.analysis.schemas import CompletedBar
 from app.models.schema import candles, instruments, signals
@@ -210,3 +210,40 @@ class InMemoryScannerRepository:
                 )
             )
         return records
+
+
+class SessionFactoryScannerRepository:
+    """Scanner repository that opens a fresh session for process-local loops."""
+
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def load_symbols(self) -> list[str]:
+        async with self._session_factory() as session:
+            return await SQLAlchemyScannerRepository(session).load_symbols()
+
+    async def load_completed_bars(
+        self,
+        *,
+        symbol: str,
+        timeframe: str,
+        limit: int,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> list[CompletedBar]:
+        async with self._session_factory() as session:
+            return await SQLAlchemyScannerRepository(session).load_completed_bars(
+                symbol=symbol,
+                timeframe=timeframe,
+                limit=limit,
+                start=start,
+                end=end,
+            )
+
+    async def insert_signal(self, evaluation: ScannerEvaluation) -> bool:
+        async with self._session_factory() as session:
+            return await SQLAlchemyScannerRepository(session).insert_signal(evaluation)
+
+    async def list_signals(self, *, limit: int) -> list[SignalRecord]:
+        async with self._session_factory() as session:
+            return await SQLAlchemyScannerRepository(session).list_signals(limit=limit)

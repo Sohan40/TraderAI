@@ -18,3 +18,13 @@ def test_settings_keep_kite_auth_disabled_by_default() -> None:
     assert settings.kite_redirect_url == ""
     assert settings.kite_session_encryption_key == ""
     assert settings.operator_auth_token == ""
+
+
+def test_operational_automation_defaults_remain_disabled() -> None:
+    settings = Settings()
+
+    assert settings.market_data_watchlist_file == ""
+    assert settings.scanner_auto_loop_enabled is False
+    assert settings.scanner_auto_loop_store_rejections is False
+    assert settings.paper_enabled is False
+    assert settings.paper_mode == "OFF"
