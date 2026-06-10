@@ -1,8 +1,8 @@
 # Market Operations Automation
 
-P05.9 coordinates existing read-only market-data, readiness, universe-selection,
-and scanner services. It is disabled by default and must be started explicitly
-through an operator-protected route.
+P05.9/P05.10 coordinate existing read-only market-data, readiness,
+universe-selection, and scanner services. All automation remains disabled by
+default.
 
 It can automate:
 
@@ -27,6 +27,12 @@ MARKET_OPS_NOTIFY_PROVIDER=none
 MARKET_OPS_TELEGRAM_BOT_TOKEN=
 MARKET_OPS_TELEGRAM_CHAT_ID=
 MARKET_OPS_NOTIFY_MIN_LEVEL=warning
+MARKET_OPS_SEND_KITE_LOGIN_LINK=false
+MARKET_OPS_LOGIN_RECOVERY_ENABLED=false
+MARKET_OPS_LOGIN_RECOVERY_START_IST=09:00
+MARKET_OPS_LOGIN_RECOVERY_STOP_IST=09:25
+MARKET_OPS_LOGIN_RECOVERY_INTERVAL_SECONDS=30
+MARKET_OPS_AUTOSTART_ENABLED=false
 ```
 
 Keep these production safeguards unchanged:
@@ -38,9 +44,12 @@ PAPER_ENABLED=false
 PAPER_MODE=OFF
 ```
 
-The scheduler is process-local. Enabling the config flag does not start it at
-API startup. An authenticated operator must call `POST
-/api/v1/ops/market-ops/start`.
+The scheduler and recovery state are process-local. Recovery state resets on
+every API restart. By default, enabling automation does not start the scheduler;
+an authenticated operator must call `POST /api/v1/ops/market-ops/start`.
+Autostart occurs only when both `MARKET_OPS_AUTOSTART_ENABLED=true` and
+`MARKET_OPS_AUTOMATION_ENABLED=true`. Scheduler startup is idempotent, so
+lifespan startup and operator requests cannot create duplicate loops.
 
 ## Daily Schedule
 
@@ -59,6 +68,37 @@ All times use `MARKET_OPS_TIMEZONE`, default `Asia/Kolkata`.
 Kite daily login is still required when the stored session is missing or
 expired. The preopen check sends `kite_session_missing`; it never performs or
 bypasses login.
+
+## Login Link And Recovery
+
+When all of the following are enabled, a missing session can produce a
+`kite_login_link_sent` Telegram notification:
+
+- `MARKET_OPS_SEND_KITE_LOGIN_LINK=true`;
+- Telegram notifications are enabled with provider `telegram`;
+- Kite authentication is enabled and fully configured.
+
+The URL is generated through the existing Kite authentication service. It is a
+short-lived helper for the human login flow only. It is not stored in the
+database or scheduler status and must not be logged. Telegram remains
+notification-only, and the existing callback still completes the authenticated
+session after the human logs in.
+
+Only one link is sent per recovery episode. An episode begins when a missing
+Kite session is detected and ends when recovery succeeds or the configured
+window expires. An API restart resets process-local episode state.
+
+With login recovery enabled, the scheduler retries only between
+`MARKET_OPS_LOGIN_RECOVERY_START_IST` and
+`MARKET_OPS_LOGIN_RECOVERY_STOP_IST`. Starting the scheduler inside that window
+immediately performs a catch-up readiness attempt, even if the normal preopen
+or stream-start minute was missed. Once login is ready, it requests stream
+start through existing readiness gates and verifies the stream on a later
+retry. At expiry it stops retrying and sends one warning.
+
+Recovery never starts the stream outside the configured window, bypasses
+watchlist/session checks, starts scanners before their existing data gates, or
+invokes P06 paper replay.
 
 ## Telegram Setup
 
@@ -105,9 +145,39 @@ POST /api/v1/ops/market-ops/test-notification
 Use the one-shot routes to validate each operation before starting the
 scheduler. The status response never includes Telegram credentials.
 
-The optional CLI was not added in P05.9. The operator API already exposes every
-one-shot action and scheduler control, while a CLI would duplicate production
-dependency and authentication construction.
+## VM-Local CLI
+
+The standard-library CLI talks only to the operator-protected HTTP API. Its
+default URL is `http://127.0.0.1:8000`; override it with `--base-url`.
+
+Token precedence is:
+
+1. `--operator-token`;
+2. the `OPERATOR_AUTH_TOKEN` environment variable;
+3. `--env-file`;
+4. `infra/gcp/env.prod` when present.
+
+Examples:
+
+```text
+python -m app.ops.cli status
+python -m app.ops.cli kite-login-url
+python -m app.ops.cli start-stream
+python -m app.ops.cli scanner
+python -m app.ops.cli paper-status
+python -m app.ops.cli paper-replay --symbol NSE:SBIN --from 2026-06-09T05:00:00Z --to 2026-06-09T10:00:00Z
+python -m app.ops.cli --base-url http://127.0.0.1:9000 status
+```
+
+Available commands are `status`, `start`, `stop`, `preopen`, `start-stream`,
+`verify-stream`, `universe`, `scanner`, `stop-stream`, `test-telegram`,
+`kite-status`, `kite-login-url`, `stream-status`, `paper-status`,
+`paper-report`, `paper-trades`, and `paper-replay`.
+
+From the repository root, `scripts/traderctl` provides the same interface while
+setting `PYTHONPATH=backend`. Paper commands remain explicit operator actions.
+The market-ops scheduler has no paper route or paper-service integration and
+never auto-runs replay.
 
 ## Safe Enablement
 
@@ -120,7 +190,8 @@ dependency and authentication construction.
 7. Call the test-notification route.
 8. Run the preopen one-shot route.
 9. Set `MARKET_OPS_AUTOMATION_ENABLED=true`, force-recreate before market, then
-   explicitly start the scheduler.
+   explicitly start the scheduler. Enable autostart separately only after
+   validating the one-shot and manual-start paths.
 10. Confirm status and the next scheduled action.
 
 `docker compose restart api` does not reload changed environment values. Use:
@@ -131,6 +202,9 @@ docker compose --env-file infra/gcp/env.prod -f infra/gcp/docker-compose.prod.ym
 
 Do not deploy, restart, or recreate the API during market hours unless
 absolutely necessary.
+
+The public proxy/Caddy configuration remains unchanged. Operator routes remain
+available only through the VM-local loopback binding or an explicit SSH tunnel.
 
 ## Immediate Disable
 

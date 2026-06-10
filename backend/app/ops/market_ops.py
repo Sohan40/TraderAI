@@ -53,6 +53,10 @@ class BatchScanner(Protocol):
     ) -> ScannerBatchResult: ...
 
 
+class KiteLoginUrlProvider(Protocol):
+    async def create_login_url(self) -> dict[str, str]: ...
+
+
 class MarketOpsOrchestrator:
     """Coordinate existing read-only services without bypassing their gates."""
 
@@ -66,6 +70,7 @@ class MarketOpsOrchestrator:
         universe_service: UniverseSelector,
         scanner_service: BatchScanner,
         notifier: Notifier,
+        kite_login_url_provider: KiteLoginUrlProvider | None = None,
         now_provider: Callable[[], datetime] | None = None,
     ) -> None:
         self._settings = settings
@@ -75,6 +80,7 @@ class MarketOpsOrchestrator:
         self._universe_service = universe_service
         self._scanner_service = scanner_service
         self._notifier = notifier
+        self._kite_login_url_provider = kite_login_url_provider
         self._now_provider = now_provider or (lambda: datetime.now(timezone.utc))
 
     async def preopen_check(self) -> dict[str, object]:
@@ -456,6 +462,41 @@ class MarketOpsOrchestrator:
             message=message,
             details=details or {},
         )
+
+    async def send_kite_login_link(self) -> bool:
+        """Send a transient manual-login helper link when every safety gate is enabled."""
+        provider = self._settings.market_ops_notify_provider.strip().lower()
+        if (
+            not self._settings.market_ops_send_kite_login_link
+            or not self._settings.market_ops_notify_enabled
+            or provider != "telegram"
+            or not self._settings.kite_auth_enabled
+            or not self._settings.kite_api_key
+            or not self._settings.kite_api_secret
+            or not self._settings.kite_redirect_url
+            or self._kite_login_url_provider is None
+        ):
+            return False
+        try:
+            response = await self._kite_login_url_provider.create_login_url()
+            login_url = response.get("login_url", "")
+            if not login_url:
+                return False
+            result = await self._notifier.notify(
+                level="warning",
+                event="kite_login_link_sent",
+                message=f"Complete the required manual Kite login: {login_url}",
+                details={},
+            )
+            return result.ok and not result.skipped
+        except Exception:
+            await self._notifier.notify(
+                level="warning",
+                event="kite_login_link_unavailable",
+                message="A Kite login link could not be generated. Use the operator login route.",
+                details={},
+            )
+            return False
 
     async def _notify(self, summary: dict[str, object]) -> None:
         await self._notifier.notify(

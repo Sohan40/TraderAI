@@ -16,6 +16,7 @@ from app.api.dependencies import (
 )
 from app.core.config import Settings
 from app.main import app
+from app.main import lifespan as app_lifespan
 from app.ops.market_ops import MarketOpsOrchestrator
 from app.ops.market_ops_scheduler import (
     MarketOpsAutomationDisabledError,
@@ -54,6 +55,16 @@ class FakeNotifier:
                 "error": None,
             },
         )()
+
+
+class FakeLoginUrlProvider:
+    def __init__(self, url: str = "https://kite.example/login?state=safe-state") -> None:
+        self.url = url
+        self.calls = 0
+
+    async def create_login_url(self) -> dict[str, str]:
+        self.calls += 1
+        return {"login_url": self.url}
 
 
 class FakeMorning:
@@ -188,6 +199,7 @@ def orchestrator(
     universe: FakeUniverse | None = None,
     scanner: FakeScanner | None = None,
     notifier: FakeNotifier | None = None,
+    login_provider: FakeLoginUrlProvider | None = None,
 ) -> MarketOpsOrchestrator:
     return MarketOpsOrchestrator(
         settings=settings or ops_settings(),
@@ -197,6 +209,7 @@ def orchestrator(
         universe_service=universe or FakeUniverse(),
         scanner_service=scanner or FakeScanner(),
         notifier=notifier or FakeNotifier(),  # type: ignore[arg-type]
+        kite_login_url_provider=login_provider,
         now_provider=lambda: NOW,
     )
 
@@ -328,6 +341,51 @@ async def test_preopen_check_reports_readiness(
 
     assert result["event"] == event
     assert notifier.calls[-1]["event"] == event
+
+
+@pytest.mark.asyncio
+async def test_kite_login_link_is_gated_and_contains_no_secrets() -> None:
+    disabled_provider = FakeLoginUrlProvider()
+    disabled = await orchestrator(
+        settings=ops_settings(
+            market_ops_send_kite_login_link=False,
+            market_ops_notify_enabled=True,
+            market_ops_notify_provider="telegram",
+            kite_auth_enabled=True,
+            kite_api_key="api-key",
+            kite_api_secret="api-secret",
+            kite_redirect_url="https://example.test/callback",
+            operator_auth_token="operator-secret",
+        ),
+        login_provider=disabled_provider,
+    ).send_kite_login_link()
+    notifier = FakeNotifier()
+    enabled_provider = FakeLoginUrlProvider()
+    enabled = await orchestrator(
+        settings=ops_settings(
+            market_ops_send_kite_login_link=True,
+            market_ops_notify_enabled=True,
+            market_ops_notify_provider="telegram",
+            kite_auth_enabled=True,
+            kite_api_key="api-key",
+            kite_api_secret="api-secret",
+            kite_redirect_url="https://example.test/callback",
+            operator_auth_token="operator-secret",
+        ),
+        notifier=notifier,
+        login_provider=enabled_provider,
+    ).send_kite_login_link()
+
+    assert disabled is False
+    assert disabled_provider.calls == 0
+    assert enabled is True
+    assert enabled_provider.calls == 1
+    assert notifier.calls[-1]["event"] == "kite_login_link_sent"
+    notification = str(notifier.calls[-1])
+    assert "https://kite.example/login?state=safe-state" in notification
+    assert "api-secret" not in notification
+    assert "operator-secret" not in notification
+    assert "access_token" not in notification
 
 
 @pytest.mark.asyncio
@@ -558,6 +616,182 @@ async def test_scheduler_runs_due_job_once_and_survives_failed_job() -> None:
     assert scheduler.status()["last_error"] is None
 
 
+@pytest.mark.asyncio
+async def test_missing_login_arms_recovery_and_sends_one_link_per_episode() -> None:
+    class MissingLoginOps:
+        def __init__(self) -> None:
+            self.link_calls = 0
+
+        async def start_stream_if_ready(self) -> dict[str, object]:
+            return {
+                "ok": False,
+                "event": "stream_start_skipped",
+                "details": {"recommended_action": "login_kite"},
+            }
+
+        async def send_kite_login_link(self) -> bool:
+            self.link_calls += 1
+            return True
+
+    ops = MissingLoginOps()
+    scheduler = MarketOpsScheduler(
+        settings=ops_settings(market_ops_login_recovery_enabled=True),
+        orchestrator=ops,  # type: ignore[arg-type]
+        now_provider=lambda: datetime(2026, 6, 11, 3, 30, tzinfo=timezone.utc),
+    )
+
+    await scheduler.run_job("stream_start")
+    await scheduler.run_job("stream_start")
+
+    status = scheduler.status()
+    assert status["waiting_for_kite_login"] is True
+    assert status["pending_action"] == "stream_start"
+    assert ops.link_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_recovery_starts_then_verifies_stream_inside_window() -> None:
+    current = datetime(2026, 6, 11, 3, 30, tzinfo=timezone.utc)
+
+    class RecoveringOps:
+        def __init__(self) -> None:
+            self.start_calls = 0
+            self.verify_calls = 0
+
+        async def start_stream_if_ready(self) -> dict[str, object]:
+            self.start_calls += 1
+            if self.start_calls == 1:
+                return {
+                    "ok": False,
+                    "event": "stream_start_skipped",
+                    "details": {"recommended_action": "login_kite"},
+                }
+            return {"ok": True, "event": "stream_started", "details": {}}
+
+        async def verify_stream(self) -> dict[str, object]:
+            self.verify_calls += 1
+            return {"ok": True, "event": "stream_verify_ok", "details": {}}
+
+        async def send_kite_login_link(self) -> bool:
+            return True
+
+    ops = RecoveringOps()
+    scheduler = MarketOpsScheduler(
+        settings=ops_settings(
+            market_ops_login_recovery_enabled=True,
+            market_ops_login_recovery_interval_seconds=30,
+        ),
+        orchestrator=ops,  # type: ignore[arg-type]
+        now_provider=lambda: current,
+    )
+
+    await scheduler.run_job("stream_start")
+    current = datetime(2026, 6, 11, 3, 30, 30, tzinfo=timezone.utc)
+    await scheduler._run_recovery()
+    assert scheduler.status()["pending_action"] == "stream_verify"
+    current = datetime(2026, 6, 11, 3, 31, tzinfo=timezone.utc)
+    await scheduler._run_recovery()
+
+    assert ops.start_calls == 2
+    assert ops.verify_calls == 1
+    assert scheduler.status()["pending_action"] is None
+
+
+@pytest.mark.asyncio
+async def test_recovery_expires_and_never_runs_outside_window() -> None:
+    current = datetime(2026, 6, 11, 3, 30, tzinfo=timezone.utc)
+
+    class RecoveryOps:
+        def __init__(self) -> None:
+            self.start_calls = 0
+            self.notifications: list[str] = []
+
+        async def start_stream_if_ready(self) -> dict[str, object]:
+            self.start_calls += 1
+            return {
+                "ok": False,
+                "event": "stream_start_skipped",
+                "details": {"recommended_action": "login_kite"},
+            }
+
+        async def send_kite_login_link(self) -> bool:
+            return True
+
+        async def notify_scheduler_event(self, **payload: object) -> None:
+            self.notifications.append(str(payload["event"]))
+
+    ops = RecoveryOps()
+    scheduler = MarketOpsScheduler(
+        settings=ops_settings(market_ops_login_recovery_enabled=True),
+        orchestrator=ops,  # type: ignore[arg-type]
+        now_provider=lambda: current,
+    )
+    await scheduler.run_job("stream_start")
+    current = datetime(2026, 6, 11, 3, 56, tzinfo=timezone.utc)
+    await scheduler._run_recovery()
+    await scheduler._run_recovery()
+
+    assert ops.start_calls == 1
+    assert ops.notifications == ["kite_login_recovery_expired"]
+    assert scheduler.status()["pending_action"] is None
+
+
+@pytest.mark.asyncio
+async def test_late_start_recovery_and_concurrent_start_use_one_loop() -> None:
+    current = datetime(2026, 6, 11, 3, 40, tzinfo=timezone.utc)
+    notifier = FakeNotifier()
+    scheduler = MarketOpsScheduler(
+        settings=ops_settings(market_ops_login_recovery_enabled=True),
+        orchestrator=orchestrator(notifier=notifier),
+        now_provider=lambda: current,
+        poll_seconds=3600,
+    )
+
+    try:
+        first, second = await asyncio.gather(scheduler.start(), scheduler.start())
+    finally:
+        await scheduler.stop()
+
+    assert first["running"] is True
+    assert second["running"] is True
+    assert first["pending_action"] == "stream_start"
+    assert [call["event"] for call in notifier.calls].count("market_ops_started") == 1
+
+
+@pytest.mark.asyncio
+async def test_app_lifespan_autostarts_only_when_both_flags_enabled(monkeypatch) -> None:
+    class LifespanScheduler:
+        def __init__(self) -> None:
+            self.starts = 0
+            self.stops = 0
+
+        async def start(self) -> dict[str, object]:
+            self.starts += 1
+            return {}
+
+        async def stop(self) -> dict[str, object]:
+            self.stops += 1
+            return {}
+
+    scheduler = LifespanScheduler()
+
+    async def provider() -> LifespanScheduler:
+        return scheduler
+
+    monkeypatch.setattr(dependencies, "get_market_ops_scheduler", provider)
+    monkeypatch.setattr(dependencies.settings, "market_ops_autostart_enabled", False)
+    monkeypatch.setattr(dependencies.settings, "market_ops_automation_enabled", True)
+    async with app_lifespan(app):
+        pass
+    assert scheduler.starts == 0
+
+    monkeypatch.setattr(dependencies.settings, "market_ops_autostart_enabled", True)
+    async with app_lifespan(app):
+        pass
+    assert scheduler.starts == 1
+    assert scheduler.stops == 1
+
+
 def test_market_ops_routes_require_token_and_dispatch(monkeypatch) -> None:
     monkeypatch.setattr(dependencies.settings, "operator_auth_token", "operator-secret")
 
@@ -655,6 +889,9 @@ def test_market_ops_defaults_and_safety_boundaries() -> None:
     assert settings.market_ops_notify_provider == "none"
     assert settings.market_ops_telegram_bot_token == ""
     assert settings.market_ops_telegram_chat_id == ""
+    assert settings.market_ops_send_kite_login_link is False
+    assert settings.market_ops_login_recovery_enabled is False
+    assert settings.market_ops_autostart_enabled is False
     assert settings.paper_enabled is False
     assert settings.paper_mode == "OFF"
     assert 'TRADING_MODE: "OFF"' in compose

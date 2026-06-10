@@ -84,6 +84,12 @@ class Settings(BaseSettings):
     market_ops_telegram_bot_token: str = ""
     market_ops_telegram_chat_id: str = ""
     market_ops_notify_min_level: str = "warning"
+    market_ops_send_kite_login_link: bool = False
+    market_ops_login_recovery_enabled: bool = False
+    market_ops_login_recovery_start_ist: str = "09:00"
+    market_ops_login_recovery_stop_ist: str = "09:25"
+    market_ops_login_recovery_interval_seconds: int = 30
+    market_ops_autostart_enabled: bool = False
     market_ops_timezone: str = "Asia/Kolkata"
     market_ops_preopen_check_time: str = "08:55"
     market_ops_stream_start_time: str = "09:08"

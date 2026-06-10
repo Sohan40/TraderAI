@@ -281,6 +281,16 @@ async def get_market_ops_orchestrator() -> MarketOpsOrchestrator:
             universe_service=universe_service,
             scanner_service=scanner_service,
             notifier=await get_notifier(),
+            kite_login_url_provider=KiteAuthService(
+                settings=settings,
+                kite_client=KiteConnectAuthClient(
+                    api_key=settings.kite_api_key,
+                    api_secret=settings.kite_api_secret,
+                ),
+                session_store=SessionFactorySessionStore(async_session_factory),
+                state_store=RedisStateStore(get_redis_client()),
+                token_cipher=_build_token_cipher(),
+            ),
         )
     return _market_ops_orchestrator
 

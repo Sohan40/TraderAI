@@ -35,6 +35,7 @@ class MarketOpsScheduler:
         self._now_provider = now_provider or (lambda: datetime.now(timezone.utc))
         self._poll_seconds = poll_seconds
         self._task: asyncio.Task[None] | None = None
+        self._lifecycle_lock = asyncio.Lock()
         self._job_lock = asyncio.Lock()
         self._completed_keys: set[str] = set()
         self._last_event_at: datetime | None = None
@@ -47,33 +48,42 @@ class MarketOpsScheduler:
             "scanner_batch": None,
             "stream_stop": None,
         }
+        self._waiting_for_kite_login = False
+        self._pending_action: str | None = None
+        self._recovery_attempts = 0
+        self._recovery_last_attempt_at: datetime | None = None
+        self._recovery_next_retry_at: datetime | None = None
+        self._login_link_sent = False
 
     async def start(self) -> dict[str, object]:
         if not self._settings.market_ops_automation_enabled:
             raise MarketOpsAutomationDisabledError("Market operations automation is disabled.")
-        if self._task is None or self._task.done():
-            self._task = asyncio.create_task(self._loop(), name="market-ops-scheduler")
-            await self._notify_event(
-                event="market_ops_started",
-                level="info",
-                message="Market operations scheduler started.",
-            )
+        async with self._lifecycle_lock:
+            if self._task is None or self._task.done():
+                self._prepare_late_start_recovery()
+                self._task = asyncio.create_task(self._loop(), name="market-ops-scheduler")
+                await self._notify_event(
+                    event="market_ops_started",
+                    level="info",
+                    message="Market operations scheduler started.",
+                )
         return self.status()
 
     async def stop(self) -> dict[str, object]:
-        task = self._task
-        self._task = None
-        if task is not None and not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            await self._notify_event(
-                event="market_ops_stopped",
-                level="info",
-                message="Market operations scheduler stopped.",
-            )
+        async with self._lifecycle_lock:
+            task = self._task
+            self._task = None
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                await self._notify_event(
+                    event="market_ops_stopped",
+                    level="info",
+                    message="Market operations scheduler stopped.",
+                )
         return self.status()
 
     def status(self) -> dict[str, object]:
@@ -83,8 +93,28 @@ class MarketOpsScheduler:
             "timezone": self._settings.market_ops_timezone,
             "notification_enabled": self._settings.market_ops_notify_enabled,
             "notification_provider": self._settings.market_ops_notify_provider,
+            "autostart_enabled": self._settings.market_ops_autostart_enabled,
             "last_event_at": self._last_event_at.isoformat() if self._last_event_at else None,
             "last_error": self._last_error,
+            "login_recovery_enabled": self._settings.market_ops_login_recovery_enabled,
+            "waiting_for_kite_login": self._waiting_for_kite_login,
+            "pending_action": self._pending_action,
+            "recovery_attempts": self._recovery_attempts,
+            "recovery_last_attempt_at": (
+                self._recovery_last_attempt_at.isoformat()
+                if self._recovery_last_attempt_at
+                else None
+            ),
+            "recovery_next_retry_at": (
+                self._recovery_next_retry_at.isoformat()
+                if self._recovery_next_retry_at
+                else None
+            ),
+            "recovery_window": {
+                "start": self._settings.market_ops_login_recovery_start_ist,
+                "stop": self._settings.market_ops_login_recovery_stop_ist,
+                "interval_seconds": self._settings.market_ops_login_recovery_interval_seconds,
+            },
             "last_preopen_check": self._last["preopen_check"],
             "last_stream_start": self._last["stream_start"],
             "last_stream_verify": self._last["stream_verify"],
@@ -120,6 +150,7 @@ class MarketOpsScheduler:
                 self._last[name] = summary
                 self._last_error = None if summary.get("ok") else str(summary.get("event"))
                 self._last_event_at = self._now()
+                await self._process_recovery_summary(name, summary)
                 return summary
             except Exception:
                 self._last_error = "market_ops_job_failed"
@@ -145,6 +176,7 @@ class MarketOpsScheduler:
         while True:
             try:
                 await self._run_due_job()
+                await self._run_recovery()
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -157,6 +189,119 @@ class MarketOpsScheduler:
                     details={},
                 )
             await asyncio.sleep(self._poll_seconds)
+
+    async def _process_recovery_summary(
+        self,
+        name: str,
+        summary: dict[str, object],
+    ) -> None:
+        details = summary.get("details")
+        safe_details = details if isinstance(details, dict) else {}
+        login_missing = (
+            summary.get("event") == "kite_session_missing"
+            or safe_details.get("recommended_action") == "login_kite"
+        )
+        if name in {"preopen_check", "stream_start"} and login_missing:
+            await self._arm_login_recovery()
+            return
+        if self._pending_action is None:
+            return
+        if name == "stream_start":
+            self._waiting_for_kite_login = False
+            if summary.get("event") in {"stream_started", "stream_not_connected"}:
+                self._pending_action = "stream_verify"
+            self._schedule_next_recovery()
+        elif name == "stream_verify":
+            if bool(summary.get("ok")):
+                self._clear_recovery()
+            else:
+                self._schedule_next_recovery()
+
+    async def _arm_login_recovery(self) -> None:
+        new_episode = self._pending_action is None
+        self._waiting_for_kite_login = True
+        self._pending_action = "stream_start"
+        self._schedule_next_recovery()
+        if new_episode:
+            self._recovery_attempts = 0
+            self._login_link_sent = False
+        if not self._login_link_sent:
+            self._login_link_sent = True
+            send_link = getattr(self._orchestrator, "send_kite_login_link", None)
+            if send_link is not None:
+                await send_link()
+
+    def _prepare_late_start_recovery(self) -> None:
+        if not self._settings.market_ops_login_recovery_enabled:
+            return
+        now = self._local_now()
+        if not self._inside_recovery_window(now):
+            return
+        self._waiting_for_kite_login = False
+        self._pending_action = "stream_start"
+        self._recovery_attempts = 0
+        self._recovery_last_attempt_at = None
+        self._recovery_next_retry_at = self._now()
+        self._login_link_sent = False
+
+    async def _run_recovery(self) -> None:
+        if self._pending_action is None:
+            return
+        local_now = self._local_now()
+        if self._recovery_window_expired(local_now):
+            if self._settings.market_ops_login_recovery_enabled:
+                await self._notify_event(
+                    event="kite_login_recovery_expired",
+                    level="warning",
+                    message="Automatic stream start was not completed inside the recovery window.",
+                    details={"pending_action": self._pending_action},
+                )
+            self._clear_recovery()
+            return
+        if (
+            not self._settings.market_ops_login_recovery_enabled
+            or not self._inside_recovery_window(local_now)
+            or self._job_lock.locked()
+        ):
+            return
+        now = self._now()
+        if self._recovery_next_retry_at is not None and now < self._recovery_next_retry_at:
+            return
+        action = self._pending_action
+        self._recovery_attempts += 1
+        self._recovery_last_attempt_at = now
+        self._schedule_next_recovery()
+        await self.run_job(action)
+
+    def _schedule_next_recovery(self) -> None:
+        seconds = max(1, self._settings.market_ops_login_recovery_interval_seconds)
+        candidate = self._now() + timedelta(seconds=seconds)
+        local_now = self._local_now()
+        start = datetime.combine(
+            local_now.date(),
+            _parse_time(self._settings.market_ops_login_recovery_start_ist),
+            tzinfo=local_now.tzinfo,
+        )
+        start_utc = start.astimezone(timezone.utc)
+        self._recovery_next_retry_at = max(candidate, start_utc)
+
+    def _inside_recovery_window(self, now: datetime) -> bool:
+        current = now.time().replace(tzinfo=None)
+        start = _parse_time(self._settings.market_ops_login_recovery_start_ist)
+        stop = _parse_time(self._settings.market_ops_login_recovery_stop_ist)
+        return start <= current <= stop
+
+    def _recovery_window_expired(self, now: datetime) -> bool:
+        stop = _parse_time(self._settings.market_ops_login_recovery_stop_ist)
+        return now.time().replace(tzinfo=None) > stop
+
+    def _clear_recovery(self) -> None:
+        self._waiting_for_kite_login = False
+        self._pending_action = None
+        self._recovery_attempts = 0
+        self._recovery_last_attempt_at = None
+        self._recovery_next_retry_at = None
+        self._login_link_sent = False
 
     async def _notify_event(
         self,

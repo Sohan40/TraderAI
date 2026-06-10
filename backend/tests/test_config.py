@@ -35,3 +35,6 @@ def test_operational_automation_defaults_remain_disabled() -> None:
     assert settings.market_ops_automation_enabled is False
     assert settings.market_ops_notify_enabled is False
     assert settings.market_ops_notify_provider == "none"
+    assert settings.market_ops_send_kite_login_link is False
+    assert settings.market_ops_login_recovery_enabled is False
+    assert settings.market_ops_autostart_enabled is False
