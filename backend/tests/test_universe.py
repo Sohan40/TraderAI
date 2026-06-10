@@ -15,7 +15,7 @@ from app.market_data.schemas import InstrumentRecord
 from app.scanners.auto_loop import ScannerAutoLoopService
 from app.scanners.repository import InMemoryScannerRepository
 from app.scanners.service import ScannerService
-from app.universe.exceptions import SelectedUniverseMissingError
+from app.universe.exceptions import SelectedUniverseMissingError, UniverseInputError
 from app.universe.schemas import UniverseSelectionRun
 from app.universe.scoring import score_symbol
 from app.universe.service import UniverseSelectionService
@@ -298,6 +298,7 @@ async def test_selection_ranks_top_n_persists_and_retrieves() -> None:
     assert run.ranked_symbols[0]["rank"] == 1
     assert run.selected_symbols == [run.ranked_symbols[0]["symbol"]]
     assert "score_weights" in run.config_snapshot
+    assert run.config_snapshot["stale_policy"] == "exclude"
     assert await service.latest() == run
     assert await service.get_run(run.run_id) == run
     assert await service.list_runs() == [run]
@@ -399,7 +400,201 @@ async def test_auto_loop_selected_universe_defaults_off_and_missing_skips() -> N
     result = await auto.run_now()
 
     assert result["skip_reason"] == "selected_universe_missing"
-    assert auto.status()["last_error"] == "selected_universe_missing"
+    assert (await auto.status())["last_error"] == "selected_universe_missing"
+
+
+@pytest.mark.asyncio
+async def test_auto_loop_status_uses_market_watchlist_source_when_selection_disabled() -> None:
+    settings = Settings(
+        market_data_watchlist="NSE:SBIN,NSE:INFY",
+        scanner_auto_loop_use_selected_universe=False,
+    )
+    auto = ScannerAutoLoopService(
+        settings=settings,
+        scanner_service=ScannerService(
+            settings=settings,
+            repository=InMemoryScannerRepository(),
+        ),
+    )
+
+    status = await auto.status()
+
+    assert status["symbols_source"] == "market_watchlist"
+    assert status["symbols"] == ["NSE:SBIN", "NSE:INFY"]
+    assert status["use_selected_universe"] is False
+    assert status["latest_universe_available"] is False
+    assert status["latest_universe_symbols"] == []
+    assert status["latest_universe_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_auto_loop_status_selected_universe_missing_does_not_show_watchlist() -> None:
+    repository = InMemoryUniverseRepository()
+    universe = UniverseSelectionService(
+        settings=universe_settings(),
+        repository=repository,
+    )
+    settings = Settings(
+        market_data_watchlist="NSE:SBIN",
+        scanner_auto_loop_use_selected_universe=True,
+    )
+    auto = ScannerAutoLoopService(
+        settings=settings,
+        scanner_service=ScannerService(
+            settings=settings,
+            repository=InMemoryScannerRepository(),
+            latest_universe_provider=universe,
+        ),
+    )
+
+    status = await auto.status()
+
+    assert status["symbols_source"] == "latest_selected_universe"
+    assert status["symbols"] == []
+    assert status["latest_universe_available"] is False
+    assert status["latest_universe_symbols"] == []
+    assert status["latest_universe_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_auto_loop_status_selected_universe_shows_latest_symbols() -> None:
+    repository = InMemoryUniverseRepository()
+    repository.runs.append(_run(["NSE:SBIN", "NSE:INFY"]))
+    universe = UniverseSelectionService(
+        settings=universe_settings(),
+        repository=repository,
+    )
+    settings = Settings(scanner_auto_loop_use_selected_universe=True)
+    auto = ScannerAutoLoopService(
+        settings=settings,
+        scanner_service=ScannerService(
+            settings=settings,
+            repository=InMemoryScannerRepository(),
+            latest_universe_provider=universe,
+        ),
+    )
+
+    status = await auto.status()
+
+    assert status["symbols_source"] == "latest_selected_universe"
+    assert status["symbols"] == ["NSE:SBIN", "NSE:INFY"]
+    assert status["latest_universe_available"] is True
+    assert status["latest_universe_symbols"] == ["NSE:SBIN", "NSE:INFY"]
+    assert status["latest_universe_count"] == 2
+
+
+@pytest.mark.parametrize(
+    ("stale_policy", "included", "has_exclusion", "has_warning"),
+    [
+        ("exclude", False, True, False),
+        ("warn", True, False, True),
+        ("ignore", True, False, False),
+    ],
+)
+def test_scoring_applies_stale_policy(
+    stale_policy: str,
+    included: bool,
+    has_exclusion: bool,
+    has_warning: bool,
+) -> None:
+    bars = _multi_session_bars()
+
+    result = score_symbol(
+        symbol="NSE:SBIN",
+        bars=bars,
+        benchmark_bars=_multi_session_bars(symbol="NSE:NIFTYBEES"),
+        settings=universe_settings(),
+        timeframe="1minute",
+        min_candles=51,
+        use_current_session=True,
+        now=bars[-1].started_at + timedelta(hours=1),
+        stale_policy=stale_policy,
+    )
+
+    assert result.included is included
+    assert ("stale_data" in result.exclusion_reasons) is has_exclusion
+    assert ("stale_data" in result.warnings) is has_warning
+
+
+@pytest.mark.asyncio
+async def test_selection_rejects_invalid_stale_policy() -> None:
+    service = UniverseSelectionService(
+        settings=universe_settings(),
+        repository=InMemoryUniverseRepository(),
+    )
+
+    with pytest.raises(UniverseInputError, match="Universe stale policy"):
+        await service.select(stale_policy="later")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("pool", "symbol", "reason"),
+    [
+        ("SBIN", "SBIN", "invalid_format_symbol"),
+        ("BSE:SBIN", "BSE:SBIN", "non_nse_symbol"),
+    ],
+)
+async def test_selection_reports_invalid_pool_entries_as_excluded_symbols(
+    pool: str,
+    symbol: str,
+    reason: str,
+) -> None:
+    service = UniverseSelectionService(
+        settings=universe_settings(universe_selection_pool=pool),
+        repository=InMemoryUniverseRepository(),
+    )
+
+    run = await service.select(dry_run=True)
+
+    assert run.excluded_symbols == [
+        {
+            "symbol": symbol,
+            "rank": None,
+            "total_score": 0.0,
+            "component_scores": {
+                "liquidity_score": 0.0,
+                "volatility_score": 0.0,
+                "relative_volume_score": 0.0,
+                "trend_score": 0.0,
+                "breakout_readiness_score": 0.0,
+                "data_quality_score": 0.0,
+            },
+            "metrics": {},
+            "included": False,
+            "exclusion_reasons": [reason],
+            "warnings": [],
+        }
+    ]
+
+
+def test_pool_validation_route_accepts_symbols_override(monkeypatch) -> None:
+    monkeypatch.setattr(dependencies.settings, "operator_auth_token", "operator-secret")
+
+    class RouteUniverse:
+        async def validate_pool(
+            self,
+            symbols: list[str] | None = None,
+        ) -> dict[str, object]:
+            return {"source": "request", "normalized_symbols": symbols or []}
+
+    app.dependency_overrides[dependencies.get_universe_selection_service] = (
+        lambda: RouteUniverse()
+    )
+    try:
+        response = TestClient(app).get(
+            "/api/v1/universe/pool/validate",
+            params=[("symbols", "NSE:SBIN"), ("symbols", "NSE:INFY")],
+            headers={"X-Operator-Token": "operator-secret"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "source": "request",
+        "normalized_symbols": ["NSE:SBIN", "NSE:INFY"],
+    }
 
 
 def test_universe_defaults_and_compose_safety() -> None:
@@ -408,12 +603,17 @@ def test_universe_defaults_and_compose_safety() -> None:
 
     assert settings.universe_selection_enabled is False
     assert settings.universe_selection_use_latest_for_scanner_batch is False
+    assert settings.universe_selection_stale_policy == "exclude"
     assert settings.scanner_auto_loop_use_selected_universe is False
     assert settings.paper_enabled is False
     assert settings.paper_mode == "OFF"
     assert 'TRADING_MODE: "OFF"' in compose
     assert 'LIVE_ARMED: "false"' in compose
     assert 'UNIVERSE_SELECTION_ENABLED: "${UNIVERSE_SELECTION_ENABLED:-false}"' in compose
+    assert (
+        'UNIVERSE_SELECTION_STALE_POLICY: '
+        '"${UNIVERSE_SELECTION_STALE_POLICY:-exclude}"'
+    ) in compose
 
 
 def test_universe_modules_have_no_external_or_execution_imports() -> None:

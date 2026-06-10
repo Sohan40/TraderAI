@@ -65,6 +65,7 @@ class UniverseSelectionService:
         use_current_session: bool = True,
         min_candles: int | None = None,
         symbols: list[str] | None = None,
+        stale_policy: str | None = None,
     ) -> UniverseSelectionRun:
         if not self._settings.universe_selection_enabled:
             raise UniverseSelectionDisabledError("Universe selection is disabled.")
@@ -77,6 +78,11 @@ class UniverseSelectionService:
         required_candles = min_candles or self._settings.universe_selection_min_session_candles
         if required_candles < 1:
             raise UniverseInputError("Universe minimum candles must be positive.")
+        selected_stale_policy = (
+            stale_policy or self._settings.universe_selection_stale_policy
+        ).strip().lower()
+        if selected_stale_policy not in {"exclude", "warn", "ignore"}:
+            raise UniverseInputError("Universe stale policy must be exclude, warn, or ignore.")
 
         started = self._now()
         validation = await self._validation.validate(symbols)
@@ -114,6 +120,7 @@ class UniverseSelectionService:
                     use_current_session=use_current_session,
                     now=started,
                     active_instrument=symbol not in validation.inactive_symbols,
+                    stale_policy=selected_stale_policy,
                 )
             )
 
@@ -148,6 +155,7 @@ class UniverseSelectionService:
                 output_limit=output_limit,
                 min_candles=required_candles,
                 use_current_session=use_current_session,
+                stale_policy=selected_stale_policy,
             ),
         )
         if self._settings.universe_selection_store_runs and not dry_run:
@@ -173,6 +181,7 @@ class UniverseSelectionService:
         output_limit: int,
         min_candles: int,
         use_current_session: bool,
+        stale_policy: str,
     ) -> dict[str, object]:
         return {
             "output_limit": output_limit,
@@ -189,6 +198,7 @@ class UniverseSelectionService:
             "min_atr_pct": self._settings.universe_selection_min_atr_pct,
             "max_atr_pct": self._settings.universe_selection_max_atr_pct,
             "use_current_session": use_current_session,
+            "stale_policy": stale_policy,
             "score_weights": SCORE_WEIGHTS,
         }
 
@@ -203,6 +213,8 @@ def _validation_exclusions(validation: dict[str, object]) -> list[UniverseSymbol
         ("missing_symbols", "missing_instrument"),
         ("inactive_symbols", "inactive_instrument"),
         ("special_character_symbols", "special_character_symbol"),
+        ("invalid_format_symbols", "invalid_format_symbol"),
+        ("non_nse_symbols", "non_nse_symbol"),
     )
     for field, reason in mappings:
         for symbol in cast(list[str], validation[field]):

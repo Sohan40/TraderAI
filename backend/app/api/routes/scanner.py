@@ -119,7 +119,7 @@ async def scanner_auto_loop_status(
     service: ScannerAutoLoopService = Depends(get_scanner_auto_loop_service),
 ) -> dict[str, object]:
     """Return non-sensitive scanner loop status."""
-    return service.status()
+    return await service.status()
 
 
 @router.post("/auto-loop/run-now")

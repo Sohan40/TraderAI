@@ -30,4 +30,5 @@ def test_operational_automation_defaults_remain_disabled() -> None:
     assert settings.paper_mode == "OFF"
     assert settings.universe_selection_enabled is False
     assert settings.universe_selection_use_latest_for_scanner_batch is False
+    assert settings.universe_selection_stale_policy == "exclude"
     assert settings.scanner_auto_loop_use_selected_universe is False

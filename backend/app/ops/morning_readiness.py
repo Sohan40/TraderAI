@@ -36,7 +36,7 @@ class MorningReadinessService:
         watchlist = await self._watchlist_service.validate()
         stream = await self._stream_readiness_service.readiness()
         scanner = await self._scanner_service.status()
-        auto_loop = self._auto_loop_service.status()
+        auto_loop = await self._auto_loop_service.status()
         universe = (
             await self._universe_service.status()
             if self._universe_service is not None

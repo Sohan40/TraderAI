@@ -29,9 +29,18 @@ characters.
 ## Scoring
 
 Hard exclusions are applied before ranking: missing/inactive instruments,
-insufficient or stale candles, missing session start, required continuity
-failure, price and turnover bounds, ATR percentage bounds, and unsupported
-timeframes.
+insufficient candles, missing session start, required continuity failure,
+price and turnover bounds, ATR percentage bounds, and unsupported timeframes.
+Stale candles follow `UNIVERSE_SELECTION_STALE_POLICY`, whose safe default is
+`exclude`. The allowed values are:
+
+- `exclude`: omit stale symbols from selection.
+- `warn`: retain stale symbols and add the `stale_data` warning.
+- `ignore`: retain stale symbols without a stale-data warning.
+
+Use `stale_policy=exclude` for an intraday live universe. For deliberate
+after-market trailing-data analysis, call selection with
+`use_current_session=false&stale_policy=warn`.
 
 The score is bounded to 100 points:
 
@@ -68,7 +77,7 @@ All routes require `X-Operator-Token`.
 
 ```text
 GET  /api/v1/universe/status
-GET  /api/v1/universe/pool/validate
+GET  /api/v1/universe/pool/validate?symbols=NSE:SBIN&symbols=NSE:INFY
 POST /api/v1/universe/select
 GET  /api/v1/universe/latest
 GET  /api/v1/universe/runs

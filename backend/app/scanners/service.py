@@ -63,6 +63,12 @@ class ScannerService:
             ),
         }
 
+    async def latest_selected_symbols(self) -> list[str] | None:
+        """Return the latest selected universe when a provider is configured."""
+        if self._latest_universe_provider is None:
+            return None
+        return await self._latest_universe_provider.latest_selected_symbols()
+
     async def run_once(
         self,
         *,
@@ -125,9 +131,7 @@ class ScannerService:
                 "Explicit symbols cannot be combined with selected universe."
             )
         if use_selected:
-            if self._latest_universe_provider is None:
-                raise SelectedUniverseMissingError("Selected universe missing.")
-            selected = await self._latest_universe_provider.latest_selected_symbols()
+            selected = await self.latest_selected_symbols()
             if not selected:
                 raise SelectedUniverseMissingError("Selected universe missing.")
         else:

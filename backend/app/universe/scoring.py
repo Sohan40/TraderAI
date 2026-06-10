@@ -32,6 +32,7 @@ def score_symbol(
     use_current_session: bool,
     now: datetime,
     active_instrument: bool = True,
+    stale_policy: str = "exclude",
 ) -> UniverseSymbolResult:
     warnings: list[str] = []
     exclusions: list[str] = []
@@ -56,8 +57,10 @@ def score_symbol(
         > latest.started_at.astimezone(timezone.utc)
         + timedelta(minutes=2, seconds=settings.scanner_stale_after_seconds)
     )
-    if stale:
+    if stale and stale_policy == "exclude":
         exclusions.append("stale_data")
+    elif stale and stale_policy == "warn":
+        warnings.append("stale_data")
     if latest is None:
         return _excluded(symbol, exclusions or ["insufficient_candles"], warnings)
 

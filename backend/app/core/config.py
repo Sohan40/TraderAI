@@ -77,6 +77,7 @@ class Settings(BaseSettings):
     universe_selection_exclude_special_char_symbols: bool = True
     universe_selection_store_runs: bool = True
     universe_selection_use_latest_for_scanner_batch: bool = False
+    universe_selection_stale_policy: str = "exclude"
     paper_enabled: bool = False
     paper_mode: str = "OFF"
     paper_max_trades_per_day: int = 3

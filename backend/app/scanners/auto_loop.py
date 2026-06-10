@@ -46,7 +46,7 @@ class ScannerAutoLoopService:
         if self._task is not None and not self._task.done():
             raise ScannerAutoLoopRunningError("Scanner auto-loop is already running.")
         self._task = asyncio.create_task(self._loop(), name="scanner-auto-loop")
-        return self.status()
+        return await self.status()
 
     async def stop(self) -> dict[str, object]:
         """Stop the loop idempotently without affecting market streaming."""
@@ -59,7 +59,7 @@ class ScannerAutoLoopService:
                 await task
             except asyncio.CancelledError:
                 pass
-        return self.status()
+        return await self.status()
 
     async def run_now(self) -> dict[str, object]:
         """Run one controlled auto-loop batch using configured policy."""
@@ -131,13 +131,20 @@ class ScannerAutoLoopService:
                 self._last_error = "scanner_auto_loop_run_failed"
                 raise
 
-    def status(self) -> dict[str, object]:
+    async def status(self) -> dict[str, object]:
         """Return non-sensitive loop state."""
+        (
+            symbols,
+            symbols_source,
+            latest_symbols,
+            latest_available,
+        ) = await self._status_symbols()
         return {
             "enabled": self._settings.scanner_auto_loop_enabled,
             "running": self._task is not None and not self._task.done(),
             "interval_seconds": self._settings.scanner_auto_loop_interval_seconds,
-            "symbols": self._status_symbols(),
+            "symbols": symbols,
+            "symbols_source": symbols_source,
             "timeframe": self._settings.scanner_auto_loop_timeframe,
             "last_run_at": self._last_run_at.isoformat() if self._last_run_at else None,
             "next_run_after": (
@@ -159,6 +166,9 @@ class ScannerAutoLoopService:
             "use_selected_universe": (
                 self._settings.scanner_auto_loop_use_selected_universe
             ),
+            "latest_universe_available": latest_available,
+            "latest_universe_symbols": latest_symbols,
+            "latest_universe_count": len(latest_symbols),
         }
 
     async def _loop(self) -> None:
@@ -200,17 +210,30 @@ class ScannerAutoLoopService:
             return None
         raise ScannerConfigError("Scanner auto-loop symbols are not configured.")
 
-    def _status_symbols(self) -> list[str]:
+    async def _status_symbols(self) -> tuple[list[str], str, list[str], bool]:
+        latest = await self._scanner_service.latest_selected_symbols()
+        latest_symbols = latest or []
+        latest_available = latest is not None
+        if self._settings.scanner_auto_loop_use_selected_universe:
+            return (
+                latest_symbols,
+                "latest_selected_universe",
+                latest_symbols,
+                latest_available,
+            )
         configured = [
             item.strip().upper()
             for item in self._settings.scanner_auto_loop_symbols.split(",")
             if item.strip()
         ]
         if configured:
-            return configured
+            return configured, "scanner_auto_loop_symbols", latest_symbols, latest_available
         if self._settings.scanner_auto_loop_use_market_watchlist:
-            return [item.upper() for item in configured_watchlist_entries(self._settings)]
-        return []
+            symbols = [
+                item.upper() for item in configured_watchlist_entries(self._settings)
+            ]
+            return symbols, "market_watchlist", latest_symbols, latest_available
+        return [], "none", latest_symbols, latest_available
 
     def _time_skip_reason(self, now: datetime) -> str | None:
         local = now.astimezone(IST)

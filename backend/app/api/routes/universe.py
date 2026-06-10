@@ -22,9 +22,10 @@ async def universe_status(
 
 @router.get("/pool/validate")
 async def validate_universe_pool(
+    symbols: list[str] | None = Query(default=None),
     service: UniverseSelectionService = Depends(get_universe_selection_service),
 ) -> dict[str, object]:
-    return await service.validate_pool()
+    return await service.validate_pool(symbols)
 
 
 @router.post("/select")
@@ -36,6 +37,7 @@ async def select_universe(
     use_current_session: bool = Query(default=True),
     min_candles: int | None = Query(default=None, ge=1),
     symbols: list[str] | None = Query(default=None),
+    stale_policy: str | None = Query(default=None),
     service: UniverseSelectionService = Depends(get_universe_selection_service),
 ) -> dict[str, object]:
     try:
@@ -47,6 +49,7 @@ async def select_universe(
             use_current_session=use_current_session,
             min_candles=min_candles,
             symbols=symbols,
+            stale_policy=stale_policy,
         )
     except UniverseSelectionDisabledError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc

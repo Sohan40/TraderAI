@@ -902,7 +902,7 @@ def test_auto_loop_status_route_is_operator_protected(monkeypatch) -> None:
     monkeypatch.setattr(dependencies.settings, "operator_auth_token", "operator-secret")
 
     class RouteAutoLoop:
-        def status(self) -> dict[str, object]:
+        async def status(self) -> dict[str, object]:
             return {"enabled": False, "running": False, "last_summary": None}
 
     app.dependency_overrides[get_scanner_auto_loop_service] = lambda: RouteAutoLoop()
