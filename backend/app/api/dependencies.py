@@ -23,6 +23,9 @@ from app.market_data.stream_readiness import StreamReadinessService
 from app.market_data.watchlist_validation import WatchlistValidationService
 from app.market_data.websocket_service import MarketDataStreamService
 from app.ops.morning_readiness import MorningReadinessService
+from app.ops.market_ops import MarketOpsOrchestrator
+from app.ops.market_ops_scheduler import MarketOpsScheduler
+from app.ops.notifier import Notifier
 from app.paper.repository import SQLAlchemyPaperRepository
 from app.paper.service import PaperService
 from app.scanners.auto_loop import ScannerAutoLoopService
@@ -36,6 +39,9 @@ from app.universe.service import UniverseSelectionService
 
 _market_data_stream_service: MarketDataStreamService | None = None
 _scanner_auto_loop_service: ScannerAutoLoopService | None = None
+_market_ops_notifier: Notifier | None = None
+_market_ops_orchestrator: MarketOpsOrchestrator | None = None
+_market_ops_scheduler: MarketOpsScheduler | None = None
 
 
 def require_operator_token(x_operator_token: str | None = Header(default=None)) -> None:
@@ -223,6 +229,71 @@ async def get_morning_readiness_service(
             repository=SQLAlchemyUniverseRepository(session),
         ),
     )
+
+
+async def get_notifier() -> Notifier:
+    """Return the process-local secret-safe market-ops notifier."""
+    global _market_ops_notifier
+    if _market_ops_notifier is None:
+        _market_ops_notifier = Notifier(settings=settings)
+    return _market_ops_notifier
+
+
+async def get_market_ops_orchestrator() -> MarketOpsOrchestrator:
+    """Build the process-local market-ops orchestration service."""
+    global _market_ops_orchestrator
+    if _market_ops_orchestrator is None:
+        stream_service = await get_market_data_stream_service()
+        auto_loop_service = await get_scanner_auto_loop_service()
+        market_repository = SessionFactoryMarketDataRepository(async_session_factory)
+        universe_service = UniverseSelectionService(
+            settings=settings,
+            repository=SessionFactoryUniverseRepository(async_session_factory),
+        )
+        scanner_service = ScannerService(
+            settings=settings,
+            repository=SessionFactoryScannerRepository(async_session_factory),
+            latest_universe_provider=universe_service,
+        )
+        watchlist_service = WatchlistValidationService(
+            settings=settings,
+            repository=market_repository,
+        )
+        stream_readiness_service = StreamReadinessService(
+            settings=settings,
+            watchlist_service=watchlist_service,
+            session_store=SessionFactorySessionStore(async_session_factory),
+            stream_status_provider=stream_service,
+        )
+        morning_readiness_service = MorningReadinessService(
+            settings=settings,
+            watchlist_service=watchlist_service,
+            stream_readiness_service=stream_readiness_service,
+            scanner_service=scanner_service,
+            auto_loop_service=auto_loop_service,
+            universe_service=universe_service,
+        )
+        _market_ops_orchestrator = MarketOpsOrchestrator(
+            settings=settings,
+            morning_readiness=morning_readiness_service,
+            stream_readiness=stream_readiness_service,
+            stream_service=stream_service,
+            universe_service=universe_service,
+            scanner_service=scanner_service,
+            notifier=await get_notifier(),
+        )
+    return _market_ops_orchestrator
+
+
+async def get_market_ops_scheduler() -> MarketOpsScheduler:
+    """Return the process-local disabled-by-default market-ops scheduler."""
+    global _market_ops_scheduler
+    if _market_ops_scheduler is None:
+        _market_ops_scheduler = MarketOpsScheduler(
+            settings=settings,
+            orchestrator=await get_market_ops_orchestrator(),
+        )
+    return _market_ops_scheduler
 
 
 async def get_paper_service(

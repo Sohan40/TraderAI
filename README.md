@@ -83,6 +83,9 @@ Kite data is **not** a replacement for company-news or corporate-event research.
   morning-readiness report. See `docs/WATCHLIST_AND_SCANNER_OPERATIONS.md`.
 - P05.8 adds disabled-by-default deterministic universe ranking over locally
   stored completed candles. See `docs/DYNAMIC_UNIVERSE_SELECTION.md`.
+- P05.9 adds disabled-by-default operator-started market-operations scheduling
+  and optional secret-safe Telegram notifications. See
+  `docs/MARKET_OPS_AUTOMATION.md`.
 - P06 adds disabled-by-default deterministic paper trading and journal/replay outputs over P05 candidates and stored completed candles only.
 - Live trading remains disabled by default with `TRADING_MODE=OFF` and `LIVE_ARMED=false`.
 - OpenAI, risk-engine, live execution and dashboard implementation phases have not started.

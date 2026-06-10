@@ -155,3 +155,8 @@ After market:
 Adding symbols requires both instrument sync and an API force-recreate when
 environment configuration changed. Validate before market open rather than
 discovering the mismatch during stream start.
+
+P05.9 can coordinate this workflow through the disabled-by-default,
+operator-started market-ops scheduler. It reuses these same readiness and
+scanner services and does not change the static watchlist. See
+`docs/MARKET_OPS_AUTOMATION.md`.

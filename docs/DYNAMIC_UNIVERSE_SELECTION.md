@@ -84,5 +84,6 @@ GET  /api/v1/universe/runs
 GET  /api/v1/universe/runs/{run_id}
 ```
 
-Future work: P04.5 or P05.9 may add a reviewed read-only historical backfill
-pipeline for broader pre-market ranking.
+P05.9 may invoke this selector at the configured time after local candles have
+accumulated. It does not add historical backfill or mutate stream
+subscriptions. See `docs/MARKET_OPS_AUTOMATION.md`.

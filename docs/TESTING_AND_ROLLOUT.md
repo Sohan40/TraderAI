@@ -71,6 +71,18 @@ missing or inadequate data, dry-run persistence behavior, compact run retrieval,
 and disabled-by-default scanner integration. A configured pool is not considered
 rankable until completed local candles exist.
 
+## P05.9 Market Operations Validation
+
+Market-ops tests use fake readiness, stream, universe, scanner, clock, and
+Telegram sender boundaries. They must never start a real WebSocket or perform a
+real network request. Scheduler tests must start and stop cleanly, prevent
+overlap, execute due jobs once per slot, contain failed jobs, and leave no
+background task running after the test.
+
+Validate operator routes, disabled defaults, notification level filtering,
+message truncation, secret-free status, and the absence of broker-order, paper
+replay, OpenAI, news, fundamentals, Kronos, or MCP paths.
+
 ## P06 Paper Validation
 
 P06 paper replay is disabled by default with `PAPER_ENABLED=false` and `PAPER_MODE=OFF`. In `PAPER` mode it consumes only persisted P05 `CANDIDATE` signals and completed `1minute` candles. Entry is a simulated long-only limit buy; stop and target are checked on later candles, with stop winning if both stop and target touch in the same candle. If the replay reaches the configured force-flat time, default `15:10` IST, the trade exits at that candle close. If data ends earlier, the trade exits at the last later candle close with `TIME_EXIT`, or records `DATA_ENDED` if no later candle exists.
