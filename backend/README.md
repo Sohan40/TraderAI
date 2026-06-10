@@ -26,5 +26,11 @@ with fake and OpenAI Responses API adapters. It stores model runs and
 recommendations only. Existing verdicts may appear in paper reports but never
 gate or trigger replay.
 
+P07.1 optionally evaluates newly persisted scanner candidates after a
+market-ops batch when both decision gates are enabled. Operator diagnostics are
+available at `GET /api/v1/decision/auto-status` and bounded manual recovery at
+`POST /api/v1/decision/evaluate-latest?limit=5`. Telegram remains
+notification-only, and neither path invokes P06 replay.
+
 Live trading remains impossible: there is no real broker order gateway, and
 `LIVE` paper mode raises a disabled/not-implemented error.

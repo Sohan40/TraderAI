@@ -6,11 +6,14 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Protocol
 
-from sqlalchemy import desc, insert, select
+from sqlalchemy import and_, desc, exists, insert, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.decision.schemas import DecisionOutput, DecisionSignal, PersistedDecision
 from app.models.schema import instruments, model_runs, recommendations, signals
+from app.scanners.schemas import CANDIDATE
 
 
 class DecisionRepository(Protocol):
@@ -39,6 +42,19 @@ class DecisionRepository(Protocol):
         *,
         signal_ids: list[int],
     ) -> dict[int, dict[str, object]]: ...
+    async def list_unevaluated_candidate_ids(
+        self,
+        *,
+        adapter: str,
+        model_name: str,
+        prompt_version: str,
+        evaluation_mode: str,
+        limit: int,
+        started_at: datetime | None = None,
+        finished_at: datetime | None = None,
+        symbols: list[str] | None = None,
+        oldest_first: bool = True,
+    ) -> list[int]: ...
 
 
 class SQLAlchemyDecisionRepository:
@@ -82,46 +98,54 @@ class SQLAlchemyDecisionRepository:
         error_code: str | None,
         evaluation_key: str | None,
     ) -> PersistedDecision:
-        model_run_id = int(
-            (
-                await self._session.execute(
-                    insert(model_runs)
-                    .values(
-                        provider="openai" if adapter == "openai" else "fake",
-                        adapter=adapter,
-                        model_name=model_name,
-                        request_id=request_id,
-                        prompt_version=prompt_version,
-                        input_hash=input_hash,
-                        input_payload=input_payload,
-                        output_payload=output_payload,
-                        latency_ms=latency_ms,
-                        error_code=error_code,
-                        status=status,
+        try:
+            model_run_id = int(
+                (
+                    await self._session.execute(
+                        insert(model_runs)
+                        .values(
+                            provider="openai" if adapter == "openai" else "fake",
+                            adapter=adapter,
+                            model_name=model_name,
+                            request_id=request_id,
+                            prompt_version=prompt_version,
+                            input_hash=input_hash,
+                            input_payload=input_payload,
+                            output_payload=output_payload,
+                            latency_ms=latency_ms,
+                            error_code=error_code,
+                            status=status,
+                        )
+                        .returning(model_runs.c.id)
                     )
-                    .returning(model_runs.c.id)
-                )
-            ).scalar_one()
-        )
-        recommendation_id = int(
-            (
-                await self._session.execute(
-                    insert(recommendations)
-                    .values(
-                        signal_id=signal.id,
-                        model_run_id=model_run_id,
-                        verdict=output.verdict.value,
-                        confidence=Decimal(str(output.confidence)),
-                        warnings=output.warnings,
-                        evaluation_key=evaluation_key,
-                        rationale="\n".join(output.reasons),
-                        payload=output.model_dump(mode="json"),
+                ).scalar_one()
+            )
+            recommendation_id = int(
+                (
+                    await self._session.execute(
+                        insert(recommendations)
+                        .values(
+                            signal_id=signal.id,
+                            model_run_id=model_run_id,
+                            verdict=output.verdict.value,
+                            confidence=Decimal(str(output.confidence)),
+                            warnings=output.warnings,
+                            evaluation_key=evaluation_key,
+                            rationale="\n".join(output.reasons),
+                            payload=output.model_dump(mode="json"),
+                        )
+                        .returning(recommendations.c.id)
                     )
-                    .returning(recommendations.c.id)
-                )
-            ).scalar_one()
-        )
-        await self._session.commit()
+                ).scalar_one()
+            )
+            await self._session.commit()
+        except IntegrityError:
+            await self._session.rollback()
+            if evaluation_key is not None:
+                existing = await self.find_by_evaluation_key(evaluation_key=evaluation_key)
+                if existing is not None:
+                    return existing
+            raise
         row = (
             await self._session.execute(
                 _recommendation_query().where(recommendations.c.id == recommendation_id)
@@ -163,6 +187,56 @@ class SQLAlchemyDecisionRepository:
             if signal_id not in output:
                 output[signal_id] = _comparison_from_row(row)
         return output
+
+    async def list_unevaluated_candidate_ids(
+        self,
+        *,
+        adapter: str,
+        model_name: str,
+        prompt_version: str,
+        evaluation_mode: str,
+        limit: int,
+        started_at: datetime | None = None,
+        finished_at: datetime | None = None,
+        symbols: list[str] | None = None,
+        oldest_first: bool = True,
+    ) -> list[int]:
+        evaluated = (
+            select(recommendations.c.id)
+            .join(model_runs, recommendations.c.model_run_id == model_runs.c.id)
+            .where(
+                recommendations.c.signal_id == signals.c.id,
+                model_runs.c.adapter == adapter,
+                model_runs.c.model_name == model_name,
+                model_runs.c.prompt_version == prompt_version,
+                model_runs.c.input_payload["evaluation_mode"].astext == evaluation_mode,
+            )
+        )
+        query = (
+            select(signals.c.id)
+            .join(instruments, signals.c.instrument_id == instruments.c.id)
+            .where(signals.c.signal_status == CANDIDATE, ~exists(evaluated))
+        )
+        if started_at is not None:
+            query = query.where(signals.c.created_at >= started_at)
+        if finished_at is not None:
+            query = query.where(signals.c.created_at <= finished_at)
+        if symbols:
+            symbol_conditions = []
+            for symbol in symbols:
+                exchange, tradingsymbol = symbol.split(":", 1)
+                symbol_conditions.append(
+                    and_(
+                        instruments.c.exchange == exchange,
+                        instruments.c.tradingsymbol == tradingsymbol,
+                    )
+                )
+            query = query.where(or_(*symbol_conditions))
+        ordering = signals.c.created_at.asc() if oldest_first else signals.c.created_at.desc()
+        rows = await self._session.execute(
+            query.order_by(ordering, signals.c.id.asc()).limit(limit)
+        )
+        return [int(row.id) for row in rows]
 
 
 class InMemoryDecisionRepository:
@@ -229,6 +303,7 @@ class InMemoryDecisionRepository:
             prompt_version=prompt_version,
             status=status,
             error_code=error_code,
+            signal_time=signal.signal_time,
             created_at=datetime.now(timezone.utc),
         )
         self.recommendations.append(persisted)
@@ -257,6 +332,87 @@ class InMemoryDecisionRepository:
                 }
         return output
 
+    async def list_unevaluated_candidate_ids(
+        self,
+        *,
+        adapter: str,
+        model_name: str,
+        prompt_version: str,
+        evaluation_mode: str,
+        limit: int,
+        started_at: datetime | None = None,
+        finished_at: datetime | None = None,
+        symbols: list[str] | None = None,
+        oldest_first: bool = True,
+    ) -> list[int]:
+        del adapter, model_name, prompt_version, evaluation_mode
+        requested_symbols = set(symbols or [])
+        candidates = [
+            signal
+            for signal in self.signals.values()
+            if signal.signal_status == CANDIDATE
+            and (not requested_symbols or signal.symbol in requested_symbols)
+            and (
+                started_at is None
+                or (signal.created_at or signal.signal_time) >= started_at
+            )
+            and (
+                finished_at is None
+                or (signal.created_at or signal.signal_time) <= finished_at
+            )
+            and not any(item.signal_id == signal.id for item in self.recommendations)
+        ]
+        candidates.sort(
+            key=lambda item: (item.created_at or item.signal_time, item.id),
+            reverse=not oldest_first,
+        )
+        return [item.id for item in candidates[:limit]]
+
+
+class SessionFactoryDecisionRepository:
+    """Open a fresh database session for process-local decision automation."""
+
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def load_signal(self, *, signal_id: int) -> DecisionSignal | None:
+        async with self._session_factory() as session:
+            return await SQLAlchemyDecisionRepository(session).load_signal(signal_id=signal_id)
+
+    async def find_by_evaluation_key(
+        self,
+        *,
+        evaluation_key: str,
+    ) -> PersistedDecision | None:
+        async with self._session_factory() as session:
+            return await SQLAlchemyDecisionRepository(session).find_by_evaluation_key(
+                evaluation_key=evaluation_key
+            )
+
+    async def record(self, **kwargs: Any) -> PersistedDecision:
+        async with self._session_factory() as session:
+            return await SQLAlchemyDecisionRepository(session).record(**kwargs)
+
+    async def list_recommendations(self, *, limit: int) -> list[PersistedDecision]:
+        async with self._session_factory() as session:
+            return await SQLAlchemyDecisionRepository(session).list_recommendations(limit=limit)
+
+    async def latest_for_signal_ids(
+        self,
+        *,
+        signal_ids: list[int],
+    ) -> dict[int, dict[str, object]]:
+        async with self._session_factory() as session:
+            return await SQLAlchemyDecisionRepository(session).latest_for_signal_ids(
+                signal_ids=signal_ids
+            )
+
+    async def list_unevaluated_candidate_ids(self, **kwargs: Any) -> list[int]:
+        async with self._session_factory() as session:
+            return await SQLAlchemyDecisionRepository(
+                session
+            ).list_unevaluated_candidate_ids(**kwargs)
+
 
 def _recommendation_query() -> Any:
     return (
@@ -269,6 +425,7 @@ def _recommendation_query() -> Any:
             model_runs.c.error_code,
             signals.c.signal_key,
             signals.c.strategy_name,
+            signals.c.signal_time,
             instruments.c.exchange,
             instruments.c.tradingsymbol,
         )
@@ -288,6 +445,7 @@ def _signal_from_row(row: Any) -> DecisionSignal:
         signal_status=str(row["signal_status"]),
         signal_time=row["signal_time"],
         features=dict(row["features"]),
+        created_at=row["created_at"],
     )
 
 
@@ -310,6 +468,7 @@ def _persisted_from_row(row: Any, *, existing: bool = False) -> PersistedDecisio
         prompt_version=str(row["prompt_version"]),
         status=str(row["status"]),
         error_code=row["error_code"],
+        signal_time=row["signal_time"],
         created_at=row["created_at"],
         existing=existing,
     )

@@ -12,11 +12,13 @@ It can automate:
 - deterministic scanner batches over the latest selected universe or static
   market watchlist;
 - repeated scanner batches during the configured intraday window;
+- optional bounded P07 shadow evaluation of newly persisted scanner candidates;
 - Telegram alerts for milestones, warnings, and failures.
 
 It does not place orders, call broker order/account endpoints, bypass Kite
-login, mutate `MARKET_DATA_WATCHLIST`, retrieve news or fundamentals, invoke
-OpenAI, or trigger P06 paper replay. Automation does not guarantee profits.
+login, mutate `MARKET_DATA_WATCHLIST`, retrieve news or fundamentals, or
+trigger P06 paper replay. Optional P07 evaluation is notification/report-only
+and never gates replay or execution. Automation does not guarantee profits.
 
 ## Safe Defaults
 
@@ -33,6 +35,9 @@ MARKET_OPS_LOGIN_RECOVERY_START_IST=09:00
 MARKET_OPS_LOGIN_RECOVERY_STOP_IST=09:25
 MARKET_OPS_LOGIN_RECOVERY_INTERVAL_SECONDS=30
 MARKET_OPS_AUTOSTART_ENABLED=false
+MARKET_OPS_DECISION_AUTO_EVALUATE_ENABLED=false
+MARKET_OPS_DECISION_AUTO_EVALUATE_MAX_SIGNALS=5
+MARKET_OPS_DECISION_AUTO_EVALUATE_ONLY_CANDIDATES=true
 ```
 
 Keep these production safeguards unchanged:
@@ -100,6 +105,49 @@ Recovery never starts the stream outside the configured window, bypasses
 watchlist/session checks, starts scanners before their existing data gates, or
 invokes P06 paper replay.
 
+## P07.1 Decision Evaluation
+
+P07.1 can evaluate newly persisted `CANDIDATE` signals immediately after a
+market-ops scanner batch. It is disabled by default and requires both:
+
+```text
+OPENAI_DECISION_ENABLED=true
+MARKET_OPS_DECISION_AUTO_EVALUATE_ENABLED=true
+```
+
+Candidate discovery is limited to the scanner batch time window and scanned
+symbols. Evaluation is oldest-first, idempotent, and capped by
+`MARKET_OPS_DECISION_AUTO_EVALUATE_MAX_SIGNALS`, default `5`. Rejected scanner
+signals, dry runs, duplicates, and already evaluated candidates do not cause
+model calls.
+
+New decisions may send one compact Telegram message each, up to the same cap.
+`ELIGIBLE` and failed evaluations use warning level; `WATCH` and `REJECT` use
+info. Messages contain signal identity, verdict, confidence, sufficiency,
+model, prompt version, and at most two configured reasons and warnings. They
+never contain raw model payloads or credentials.
+
+Enable a deliberate real adapter only through ignored runtime configuration:
+
+```text
+OPENAI_DECISION_ENABLED=true
+OPENAI_DECISION_ADAPTER=openai
+OPENAI_MODEL=...
+OPENAI_API_KEY=...
+OPENAI_DECISION_STORE=false
+OPENAI_DECISION_EVALUATION_MODE=LIVE_SHADOW
+MARKET_OPS_DECISION_AUTO_EVALUATE_ENABLED=true
+```
+
+Immediately disable automatic calls with:
+
+```text
+MARKET_OPS_DECISION_AUTO_EVALUATE_ENABLED=false
+```
+
+The scheduler never invokes P06 paper replay, risk checks, order creation, or
+broker account endpoints.
+
 ## Telegram Setup
 
 1. Create a bot with BotFather.
@@ -140,6 +188,8 @@ POST /api/v1/ops/market-ops/run-universe-selection
 POST /api/v1/ops/market-ops/run-scanner-batch
 POST /api/v1/ops/market-ops/run-stop-stream
 POST /api/v1/ops/market-ops/test-notification
+GET  /api/v1/decision/auto-status
+POST /api/v1/decision/evaluate-latest?limit=5
 ```
 
 Use the one-shot routes to validate each operation before starting the
@@ -173,6 +223,11 @@ Available commands are `status`, `start`, `stop`, `preopen`, `start-stream`,
 `verify-stream`, `universe`, `scanner`, `stop-stream`, `test-telegram`,
 `kite-status`, `kite-login-url`, `stream-status`, `paper-status`,
 `paper-report`, `paper-trades`, and `paper-replay`.
+
+P07.1 adds `decision-auto-status` and
+`decision-evaluate-latest --limit 5`. Manual latest evaluation is bounded,
+candidate-only, idempotent, and does not require automatic evaluation to be
+enabled.
 
 From the repository root, `scripts/traderctl` provides the same interface while
 setting `PYTHONPATH=backend`. Paper commands remain explicit operator actions.
@@ -211,7 +266,9 @@ available only through the VM-local loopback binding or an explicit SSH tunnel.
 1. Call `POST /api/v1/ops/market-ops/stop`.
 2. Set `MARKET_OPS_AUTOMATION_ENABLED=false`.
 3. Set `MARKET_OPS_NOTIFY_ENABLED=false` if notifications must also stop.
-4. Force-recreate the API only at a safe operational time.
+4. Set `MARKET_OPS_DECISION_AUTO_EVALUATE_ENABLED=false` to stop automatic
+   model calls while preserving scanner operation.
+5. Force-recreate the API only at a safe operational time.
 
 Stopping automation does not alter the watchlist, Kite session, paper settings,
 or trading safety settings.

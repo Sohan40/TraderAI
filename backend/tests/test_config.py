@@ -41,3 +41,9 @@ def test_operational_automation_defaults_remain_disabled() -> None:
     assert settings.openai_decision_enabled is False
     assert settings.openai_decision_adapter == "fake"
     assert settings.openai_decision_store is False
+    assert settings.openai_decision_prompt_version == "p07_1_v1"
+    assert settings.openai_decision_evaluation_mode == "LIVE_SHADOW"
+    assert settings.market_ops_decision_auto_evaluate_enabled is False
+    assert settings.market_ops_decision_auto_evaluate_max_signals == 5
+    assert settings.market_ops_decision_auto_evaluate_only_candidates is True
+    assert settings.market_ops_decision_notify_enabled is True

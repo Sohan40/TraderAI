@@ -21,6 +21,12 @@ class DataSufficiency(str, Enum):
     INSUFFICIENT = "INSUFFICIENT"
 
 
+class EvaluationMode(str, Enum):
+    HISTORICAL_REPLAY = "HISTORICAL_REPLAY"
+    LIVE_SHADOW = "LIVE_SHADOW"
+    FUTURE_LIVE_ELIGIBILITY = "FUTURE_LIVE_ELIGIBILITY"
+
+
 StopMethod = Literal["breakout_failure_or_atr", "vwap_failure_or_atr"]
 
 
@@ -50,6 +56,8 @@ class DecisionInput(BaseModel):
     strategy_version: str
     timestamp_ist: str
     signal_status: str
+    evaluation_mode: EvaluationMode
+    evaluation_warnings: list[str] = Field(default_factory=list, max_length=20)
     indicator_values: dict[str, str | None]
     data_quality: dict[str, bool]
     future_live_qualification: dict[str, object]
@@ -80,6 +88,7 @@ class DecisionSignal:
     signal_status: str
     signal_time: datetime
     features: dict[str, Any]
+    created_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -107,6 +116,7 @@ class PersistedDecision:
     prompt_version: str
     status: str
     error_code: str | None
+    signal_time: datetime
     created_at: datetime
     existing: bool = False
 
@@ -128,6 +138,7 @@ class PersistedDecision:
             "prompt_version": self.prompt_version,
             "status": self.status,
             "error_code": self.error_code,
+            "signal_time": self.signal_time.isoformat(),
             "created_at": self.created_at.isoformat(),
             "existing": self.existing,
         }

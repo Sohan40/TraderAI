@@ -103,8 +103,12 @@ audit persistence, signal/prompt/model idempotency, disabled defaults, and an
 OpenAI request with no tools and `store=false`.
 
 Paper regression tests must prove that an existing `REJECT` recommendation does
-not block or alter deterministic replay. Market-ops tests must continue proving
-there is no automatic decision or paper-replay trigger.
+not block or alter deterministic replay. P07.1 tests must prove disabled dual
+gates, batch-window candidate discovery, maximum evaluation bounds,
+idempotency, evaluation-mode normalization, raw versus normalized output
+persistence, verdict notification levels, and nested secret redaction.
+Market-ops tests must prove scanner batches survive decision failures and that
+there is no automatic paper-replay or execution trigger.
 
 ## Operational review after every live day
 

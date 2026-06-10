@@ -162,11 +162,19 @@ def test_cli_passes_decision_parameters() -> None:
         opener=opener,
         stdout=io.StringIO(),
     ) == 0
+    assert run(
+        ["decision-evaluate-latest", "--limit", "3"],
+        environ={"OPERATOR_AUTH_TOKEN": "operator-secret"},
+        opener=opener,
+        stdout=io.StringIO(),
+    ) == 0
 
     evaluate_query = parse.parse_qs(parse.urlsplit(captured[0].full_url).query)
     recommendations_query = parse.parse_qs(parse.urlsplit(captured[1].full_url).query)
+    latest_query = parse.parse_qs(parse.urlsplit(captured[2].full_url).query)
     assert evaluate_query == {"signal_id": ["15"], "force": ["True"]}
     assert recommendations_query == {"limit": ["25"]}
+    assert latest_query == {"limit": ["3"]}
 
 
 def test_traderctl_defaults_to_python3() -> None:

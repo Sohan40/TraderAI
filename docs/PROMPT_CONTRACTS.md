@@ -12,6 +12,9 @@ plus paper/configured-limit context. Unknown feature keys and all secret,
 account, quantity, order, broker, environment, and external-data fields are
 discarded before hashing or prompting.
 
+The canonical input also contains an `evaluation_mode` and bounded
+`evaluation_warnings`.
+
 ```json
 {
   "candidate_id": "uuid",
@@ -63,6 +66,14 @@ discarded before hashing or prompting.
 
 Allowed verdicts: `ELIGIBLE`, `WATCH`, `REJECT`. Allowed templates are configured server-side.
 
+Evaluation modes:
+
+- `HISTORICAL_REPLAY`: stale quote or missing spread context is advisory.
+- `LIVE_SHADOW`: an otherwise eligible result with missing quote freshness or
+  required spread validation is normalized to `WATCH`.
+- `FUTURE_LIVE_ELIGIBILITY`: the same missing context normalizes an eligible
+  result to safe `REJECT`.
+
 ## System prompt
 
 ```text
@@ -98,6 +109,11 @@ P07 uses strict extra-field rejection and recursively rejects quantity, broker,
 order, credential, and risk-override fields. External-fact claims, insufficient
 data, non-allowlisted strategy templates, and low-confidence `ELIGIBLE` results
 become auditable safe `REJECT` recommendations.
+
+`model_runs.output_payload` stores sanitized raw parsed model output for
+debugging. `recommendations.payload` stores the final normalized safe output.
+Order, quantity, broker, risk-override, and secret fields are removed from raw
+persistence.
 
 The Responses API request contains no tools. It uses structured parsing,
 bounded output tokens, configured timeout/retries, `tool_choice: none`, and

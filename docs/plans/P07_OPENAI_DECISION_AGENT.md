@@ -68,7 +68,17 @@ For a deliberate real test, configure `OPENAI_DECISION_ADAPTER=openai`,
 `OPENAI_MODEL`, and `OPENAI_API_KEY` in an ignored runtime env file, then
 force-recreate the API outside market hours. `WATCH` or `REJECT` is acceptable
 for historical signal 15 because its stored quote/spread context is incomplete.
-The model is never called by market-ops and never starts paper replay.
+P07.1 may call the model after a market-ops scanner batch only when both P07
+and decision auto-evaluation are explicitly enabled. Calls are bounded,
+candidate-only, idempotent, notification/report-only, and never start paper
+replay.
+
+Manual recovery is available through:
+
+```text
+scripts/traderctl decision-auto-status
+scripts/traderctl decision-evaluate-latest --limit 5
+```
 
 ## Codex prompt
 

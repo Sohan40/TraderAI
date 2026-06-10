@@ -57,6 +57,19 @@ class KiteLoginUrlProvider(Protocol):
     async def create_login_url(self) -> dict[str, str]: ...
 
 
+class DecisionAutomation(Protocol):
+    def status(self) -> dict[str, object]: ...
+    async def evaluate_scanner_batch(
+        self,
+        *,
+        started_at: datetime,
+        finished_at: datetime,
+        symbols: list[str],
+        dry_run: bool,
+        candidate_count: int,
+    ) -> dict[str, object]: ...
+
+
 class MarketOpsOrchestrator:
     """Coordinate existing read-only services without bypassing their gates."""
 
@@ -70,6 +83,7 @@ class MarketOpsOrchestrator:
         universe_service: UniverseSelector,
         scanner_service: BatchScanner,
         notifier: Notifier,
+        decision_automation: DecisionAutomation | None = None,
         kite_login_url_provider: KiteLoginUrlProvider | None = None,
         now_provider: Callable[[], datetime] | None = None,
     ) -> None:
@@ -80,6 +94,7 @@ class MarketOpsOrchestrator:
         self._universe_service = universe_service
         self._scanner_service = scanner_service
         self._notifier = notifier
+        self._decision_automation = decision_automation
         self._kite_login_url_provider = kite_login_url_provider
         self._now_provider = now_provider or (lambda: datetime.now(timezone.utc))
 
@@ -385,6 +400,8 @@ class MarketOpsOrchestrator:
                         "symbols": candidates,
                     },
                 )
+            decision_summary = await self._run_decision_auto_evaluation(result)
+            summary["details"]["decision_auto_evaluation"] = decision_summary  # type: ignore[index]
         except SelectedUniverseMissingError:
             summary = self._summary(
                 started=started,
@@ -399,6 +416,53 @@ class MarketOpsOrchestrator:
             summary = self._failed(started, "scanner_batch_failed", "Scanner batch failed.")
         await self._notify(summary)
         return summary
+
+    def decision_auto_status(self) -> dict[str, object]:
+        if self._decision_automation is None:
+            return {
+                "enabled": False,
+                "decision_enabled": self._settings.openai_decision_enabled,
+                "available": False,
+                "last_summary": None,
+            }
+        return self._decision_automation.status()
+
+    async def _run_decision_auto_evaluation(
+        self,
+        result: ScannerBatchResult,
+    ) -> dict[str, object]:
+        if self._decision_automation is None:
+            return {
+                "attempted": 0,
+                "created": 0,
+                "existing": 0,
+                "failed": 0,
+                "skipped": 1,
+                "skipped_reason": "decision_automation_unavailable",
+                "notified": 0,
+                "truncated": False,
+                "results": [],
+            }
+        try:
+            return await self._decision_automation.evaluate_scanner_batch(
+                started_at=result.started_at,
+                finished_at=result.finished_at,
+                symbols=[item.symbol for item in result.per_symbol],
+                dry_run=self._settings.market_ops_dry_run,
+                candidate_count=result.total_candidates,
+            )
+        except Exception:
+            return {
+                "attempted": 0,
+                "created": 0,
+                "existing": 0,
+                "failed": 1,
+                "skipped": 0,
+                "error_code": "decision_auto_batch_failed",
+                "notified": 0,
+                "truncated": False,
+                "results": [],
+            }
 
     async def stop_stream(self) -> dict[str, object]:
         started = self._now()

@@ -107,6 +107,13 @@ class Settings(BaseSettings):
     market_ops_use_selected_universe_for_scanner: bool = True
     market_ops_store_rejections: bool = False
     market_ops_dry_run: bool = False
+    market_ops_decision_auto_evaluate_enabled: bool = False
+    market_ops_decision_auto_evaluate_max_signals: int = 5
+    market_ops_decision_auto_evaluate_only_candidates: bool = True
+    market_ops_decision_notify_enabled: bool = True
+    market_ops_decision_notify_verdicts: str = "ELIGIBLE,WATCH,REJECT"
+    market_ops_decision_notify_include_reasons: bool = True
+    market_ops_decision_notify_include_warnings: bool = True
     openai_decision_enabled: bool = False
     openai_decision_adapter: str = "fake"
     openai_model: str = ""
@@ -114,9 +121,10 @@ class Settings(BaseSettings):
     openai_decision_timeout_seconds: float = 10
     openai_decision_max_retries: int = 1
     openai_decision_store: bool = False
-    openai_decision_prompt_version: str = "p07_v1"
+    openai_decision_prompt_version: str = "p07_1_v1"
     openai_decision_min_confidence: float = 0.60
     openai_decision_max_output_tokens: int = 800
+    openai_decision_evaluation_mode: str = "LIVE_SHADOW"
     max_trade_notional_inr: float = 500
     max_planned_risk_per_trade_inr: float = 10
     max_daily_loss_inr: float = 20

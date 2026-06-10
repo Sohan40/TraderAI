@@ -13,9 +13,13 @@ from app.broker.token_cipher import TokenCipher
 from app.cache.redis import get_redis_client
 from app.core.config import settings
 from app.db.session import async_session_factory, get_session
+from app.decision.automation import DecisionAutomationService
 from app.decision.fake_adapter import FakeDecisionAdapter
 from app.decision.openai_adapter import OpenAIDecisionAdapter
-from app.decision.repository import SQLAlchemyDecisionRepository
+from app.decision.repository import (
+    SQLAlchemyDecisionRepository,
+    SessionFactoryDecisionRepository,
+)
 from app.decision.service import DecisionService
 from app.market_data.instrument_sync import InstrumentSyncService
 from app.market_data.kite_market_client import KiteConnectMarketClient
@@ -46,6 +50,7 @@ _scanner_auto_loop_service: ScannerAutoLoopService | None = None
 _market_ops_notifier: Notifier | None = None
 _market_ops_orchestrator: MarketOpsOrchestrator | None = None
 _market_ops_scheduler: MarketOpsScheduler | None = None
+_decision_automation_service: DecisionAutomationService | None = None
 
 
 def require_operator_token(x_operator_token: str | None = Header(default=None)) -> None:
@@ -285,6 +290,7 @@ async def get_market_ops_orchestrator() -> MarketOpsOrchestrator:
             universe_service=universe_service,
             scanner_service=scanner_service,
             notifier=await get_notifier(),
+            decision_automation=await get_decision_automation_service(),
             kite_login_url_provider=KiteAuthService(
                 settings=settings,
                 kite_client=KiteConnectAuthClient(
@@ -324,14 +330,34 @@ async def get_decision_service(
     session: AsyncSession = Depends(get_session),
 ) -> DecisionService:
     """Build operator-triggered P07 decision evaluation."""
-    adapter_name = settings.openai_decision_adapter.strip().lower()
-    adapter = (
-        OpenAIDecisionAdapter(settings=settings)
-        if adapter_name == "openai"
-        else FakeDecisionAdapter()
-    )
     return DecisionService(
         settings=settings,
         repository=SQLAlchemyDecisionRepository(session),
-        adapter=adapter,
+        adapter=_build_decision_adapter(),
     )
+
+
+def _build_decision_adapter() -> OpenAIDecisionAdapter | FakeDecisionAdapter:
+    return (
+        OpenAIDecisionAdapter(settings=settings)
+        if settings.openai_decision_adapter.strip().lower() == "openai"
+        else FakeDecisionAdapter()
+    )
+
+
+async def get_decision_automation_service() -> DecisionAutomationService:
+    """Return process-local bounded P07 automation and its last summary."""
+    global _decision_automation_service
+    if _decision_automation_service is None:
+        repository = SessionFactoryDecisionRepository(async_session_factory)
+        _decision_automation_service = DecisionAutomationService(
+            settings=settings,
+            decision_service=DecisionService(
+                settings=settings,
+                repository=repository,
+                adapter=_build_decision_adapter(),
+            ),
+            repository=repository,
+            notifier=await get_notifier(),
+        )
+    return _decision_automation_service

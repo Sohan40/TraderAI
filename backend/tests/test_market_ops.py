@@ -175,6 +175,33 @@ class FakeScanner:
         )
 
 
+class FakeDecisionAutomation:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.last_summary: dict[str, object] | None = None
+
+    def status(self) -> dict[str, object]:
+        return {
+            "enabled": True,
+            "decision_enabled": True,
+            "last_summary": self.last_summary,
+        }
+
+    async def evaluate_scanner_batch(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(kwargs)
+        self.last_summary = {
+            "attempted": 1,
+            "created": 1,
+            "existing": 0,
+            "failed": 0,
+            "skipped": 0,
+            "notified": 1,
+            "truncated": False,
+            "results": [],
+        }
+        return self.last_summary
+
+
 def ops_settings(**overrides: object) -> Settings:
     values: dict[str, object] = {
         "trading_mode": "OFF",
@@ -199,6 +226,7 @@ def orchestrator(
     universe: FakeUniverse | None = None,
     scanner: FakeScanner | None = None,
     notifier: FakeNotifier | None = None,
+    decision_automation: FakeDecisionAutomation | None = None,
     login_provider: FakeLoginUrlProvider | None = None,
 ) -> MarketOpsOrchestrator:
     return MarketOpsOrchestrator(
@@ -209,6 +237,7 @@ def orchestrator(
         universe_service=universe or FakeUniverse(),
         scanner_service=scanner or FakeScanner(),
         notifier=notifier or FakeNotifier(),  # type: ignore[arg-type]
+        decision_automation=decision_automation,
         kite_login_url_provider=login_provider,
         now_provider=lambda: NOW,
     )
@@ -268,6 +297,50 @@ async def test_telegram_notifier_builds_payload_without_exposing_token() -> None
     assert "api_secret" not in payload["text"][0]
     assert "fake-token" not in str(result.as_dict())
     assert sent["timeout"] == 5.0
+
+
+@pytest.mark.asyncio
+async def test_telegram_notifier_redacts_nested_secrets_and_payloads() -> None:
+    sent: dict[str, object] = {}
+
+    def sender(url: str, payload: bytes, timeout: float) -> None:
+        sent.update(url=url, payload=payload, timeout=timeout)
+
+    notifier = Notifier(
+        settings=ops_settings(
+            market_ops_notify_enabled=True,
+            market_ops_notify_provider="telegram",
+            market_ops_notify_min_level="info",
+            market_ops_telegram_bot_token="telegram-secret",
+            market_ops_telegram_chat_id="123456",
+            openai_api_key="openai-secret",
+            operator_auth_token="operator-secret",
+        ),
+        http_sender=sender,
+        now_provider=lambda: NOW,
+    )
+
+    await notifier.notify(
+        level="info",
+        event="decision_candidate_watch",
+        message="Decision notification.",
+        details={
+            "safe": "openai-secret must be redacted",
+            "nested": {
+                "operator_token": "operator-secret",
+                "raw_payload": {"quantity": 10},
+                "reason": "safe-reason",
+            },
+        },
+    )
+
+    sent_payload = sent["payload"]
+    assert isinstance(sent_payload, bytes)
+    text = parse_qs(sent_payload.decode())["text"][0]
+    assert "openai-secret" not in text
+    assert "operator-secret" not in text
+    assert "quantity" not in text
+    assert "safe-reason" in text
 
 
 @pytest.mark.asyncio
@@ -503,6 +576,40 @@ async def test_scanner_batch_source_candidates_and_missing_selection() -> None:
     assert watchlist.calls[0]["use_latest_universe"] is False
     assert watchlist_result["details"]["symbol_source"] == "market_watchlist"  # type: ignore[index]
     assert missing["skipped"] is True
+
+
+@pytest.mark.asyncio
+async def test_scanner_batch_passes_persisted_window_to_decision_automation() -> None:
+    decision_automation = FakeDecisionAutomation()
+    result = await orchestrator(
+        scanner=FakeScanner(candidates=1),
+        decision_automation=decision_automation,
+    ).run_scanner_batch()
+
+    assert len(decision_automation.calls) == 1
+    assert decision_automation.calls[0] == {
+        "started_at": NOW,
+        "finished_at": NOW,
+        "symbols": ["NSE:SBIN"],
+        "dry_run": False,
+        "candidate_count": 1,
+    }
+    details = result["details"]
+    assert isinstance(details, dict)
+    decision_summary = details["decision_auto_evaluation"]
+    assert isinstance(decision_summary, dict)
+    assert decision_summary["created"] == 1
+
+
+def test_scheduler_status_includes_decision_auto_status() -> None:
+    decision_automation = FakeDecisionAutomation()
+    status = MarketOpsScheduler(
+        settings=ops_settings(),
+        orchestrator=orchestrator(decision_automation=decision_automation),
+        now_provider=lambda: NOW,
+    ).status()
+
+    assert status["decision_auto_evaluation"]["enabled"] is True  # type: ignore[index]
 
 
 @pytest.mark.asyncio
@@ -881,6 +988,7 @@ def test_market_ops_defaults_and_safety_boundaries() -> None:
             Path("backend/app/ops/notifier.py"),
             Path("backend/app/ops/market_ops.py"),
             Path("backend/app/ops/market_ops_scheduler.py"),
+            Path("backend/app/decision/automation.py"),
         )
     )
 
@@ -892,6 +1000,7 @@ def test_market_ops_defaults_and_safety_boundaries() -> None:
     assert settings.market_ops_send_kite_login_link is False
     assert settings.market_ops_login_recovery_enabled is False
     assert settings.market_ops_autostart_enabled is False
+    assert settings.market_ops_decision_auto_evaluate_enabled is False
     assert settings.paper_enabled is False
     assert settings.paper_mode == "OFF"
     assert 'TRADING_MODE: "OFF"' in compose
@@ -899,7 +1008,11 @@ def test_market_ops_defaults_and_safety_boundaries() -> None:
     assert "paper.replay" not in sources
     assert "paper.run" not in sources
     assert "place_order" not in sources
-    assert "openai" not in sources
+    assert "paper_service" not in sources
+    assert "risk_check" not in sources
+    assert "websocket_service" not in sources
+    assert "asyncopenai" not in sources
+    assert "openai_adapter" not in sources
     assert "kronos" not in sources
     assert " mcp" not in sources
     assert "yfinance" not in sources

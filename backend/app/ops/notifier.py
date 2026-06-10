@@ -14,7 +14,18 @@ from app.core.config import Settings
 LEVELS = {"info": 10, "warning": 20, "error": 30}
 MAX_MESSAGE_LENGTH = 3500
 TELEGRAM_API_ROOT = "https://api.telegram.org"
-_SECRET_FRAGMENTS = ("token", "secret", "password", "database_url", "redis_url")
+_SECRET_FRAGMENTS = (
+    "token",
+    "secret",
+    "password",
+    "database_url",
+    "redis_url",
+    "api_key",
+    "chat_id",
+    "operator",
+    "payload",
+    "raw_env",
+)
 
 
 @dataclass(frozen=True)
@@ -83,7 +94,10 @@ class Notifier:
             event=event,
             message=message,
             timestamp=self._now_provider(),
-            details=_safe_details(details or {}),
+            details=_safe_details(
+                details or {},
+                secrets=_configured_secrets(self._settings),
+            ),
         )
         payload = parse.urlencode({"chat_id": chat_id, "text": text}).encode()
         url = f"{TELEGRAM_API_ROOT}/bot{token}/sendMessage"
@@ -122,12 +136,46 @@ def _post(url: str, payload: bytes, timeout: float) -> None:
         raise RuntimeError("telegram_rejected_message")
 
 
-def _safe_details(details: dict[str, object]) -> dict[str, object]:
+def _safe_details(
+    details: dict[str, object],
+    *,
+    secrets: tuple[str, ...] = (),
+) -> dict[str, object]:
     return {
-        key: value
+        key: _safe_value(value, secrets=secrets)
         for key, value in details.items()
         if not any(fragment in key.lower() for fragment in _SECRET_FRAGMENTS)
     }
+
+
+def _safe_value(value: object, *, secrets: tuple[str, ...]) -> object:
+    if isinstance(value, dict):
+        return _safe_details(value, secrets=secrets)
+    if isinstance(value, (list, tuple)):
+        return [_safe_value(item, secrets=secrets) for item in value]
+    if isinstance(value, str):
+        safe = value
+        for secret in secrets:
+            safe = safe.replace(secret, "[redacted]")
+        return safe
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _configured_secrets(settings: Settings) -> tuple[str, ...]:
+    values = (
+        settings.market_ops_telegram_bot_token,
+        settings.market_ops_telegram_chat_id,
+        settings.operator_auth_token,
+        settings.kite_api_key,
+        settings.kite_api_secret,
+        settings.kite_session_encryption_key,
+        settings.openai_api_key,
+        settings.database_url,
+        settings.redis_url,
+    )
+    return tuple(value for value in values if value)
 
 
 def _format_message(

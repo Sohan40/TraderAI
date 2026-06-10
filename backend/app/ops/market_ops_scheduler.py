@@ -120,6 +120,7 @@ class MarketOpsScheduler:
             "last_stream_verify": self._last["stream_verify"],
             "last_universe_selection": self._last["universe_selection"],
             "last_scanner_batch": self._last["scanner_batch"],
+            "decision_auto_evaluation": self._decision_auto_status(),
             "last_stream_stop": self._last["stream_stop"],
             "next_scheduled_action": (
                 self._next_scheduled_action()
@@ -129,6 +130,12 @@ class MarketOpsScheduler:
             "schedule": self._schedule(),
             "overlap_prevention": True,
         }
+
+    def _decision_auto_status(self) -> dict[str, object]:
+        status = getattr(self._orchestrator, "decision_auto_status", None)
+        if status is None:
+            return {"enabled": False, "available": False, "last_summary": None}
+        return status()
 
     async def run_job(self, name: str) -> dict[str, object]:
         if self._job_lock.locked():

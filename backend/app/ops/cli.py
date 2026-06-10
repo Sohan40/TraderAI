@@ -34,6 +34,8 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "decision-status": ("GET", "/api/v1/decision/status"),
     "decision-evaluate": ("POST", "/api/v1/decision/evaluate"),
     "decision-recommendations": ("GET", "/api/v1/decision/recommendations"),
+    "decision-auto-status": ("GET", "/api/v1/decision/auto-status"),
+    "decision-evaluate-latest": ("POST", "/api/v1/decision/evaluate-latest"),
 }
 
 
@@ -63,7 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
         elif command == "decision-evaluate":
             command_parser.add_argument("--signal-id", type=int, required=True)
             command_parser.add_argument("--force", action="store_true")
-        elif command == "decision-recommendations":
+        elif command in {"decision-recommendations", "decision-evaluate-latest"}:
             command_parser.add_argument("--limit", type=int)
     return parser
 
@@ -150,7 +152,7 @@ def _query_for(args: argparse.Namespace) -> dict[str, object]:
         }
     elif args.command == "decision-evaluate":
         values = {"signal_id": args.signal_id, "force": args.force}
-    elif args.command == "decision-recommendations":
+    elif args.command in {"decision-recommendations", "decision-evaluate-latest"}:
         values = {"limit": args.limit}
     else:
         return {}
