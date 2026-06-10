@@ -35,3 +35,9 @@ def test_initial_storage_schema_contains_p01_tables() -> None:
     assert "uq_trades_paper_signal_id" in {
         index.name for index in metadata.tables["trades"].indexes
     }
+    assert "prompt_version" in metadata.tables["model_runs"].c
+    assert "input_hash" in metadata.tables["model_runs"].c
+    assert "error_code" in metadata.tables["model_runs"].c
+    assert "confidence" in metadata.tables["recommendations"].c
+    assert "warnings" in metadata.tables["recommendations"].c
+    assert "evaluation_key" in metadata.tables["recommendations"].c

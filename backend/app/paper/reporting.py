@@ -24,6 +24,8 @@ def build_paper_report(
     no_fills = 0
     filled_trades = 0
     rejections = 0
+    decision_coverage = 0
+    decision_verdicts: Counter[str] = Counter()
     for outcome in outcomes:
         if outcome.get("simulated") is True:
             simulated += 1
@@ -41,6 +43,10 @@ def build_paper_report(
             filled_trades += 1
         if outcome.get("rejection_reason"):
             rejections += 1
+        decision = outcome.get("model_decision")
+        if isinstance(decision, dict):
+            decision_coverage += 1
+            decision_verdicts[str(decision.get("verdict") or "UNKNOWN")] += 1
     return {
         "paper_enabled": paper_enabled,
         "paper_mode": paper_mode.value,
@@ -53,6 +59,8 @@ def build_paper_report(
         "filled_paper_trade_outcomes": filled_trades,
         "paper_trade_outcomes": filled_trades,
         "rejections": rejections,
+        "model_decision_coverage": decision_coverage,
+        "model_decision_verdict_counts": dict(sorted(decision_verdicts.items())),
         "gross_pnl": _money(gross),
         "estimated_costs": _money(costs),
         "net_estimated_pnl": _money(net),

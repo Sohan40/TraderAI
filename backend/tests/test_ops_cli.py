@@ -28,7 +28,7 @@ class FakeResponse:
 @pytest.mark.parametrize(("command", "method", "path"), [
     (command, method, path)
     for command, (method, path) in COMMANDS.items()
-    if command != "paper-replay"
+    if command not in {"paper-replay", "decision-evaluate", "decision-recommendations"}
 ])
 def test_cli_maps_commands_to_operator_routes(
     command: str,
@@ -141,6 +141,37 @@ def test_cli_passes_paper_replay_query_parameters() -> None:
         "to": ["2026-06-09T10:00:00Z"],
         "limit": ["25"],
     }
+
+
+def test_cli_passes_decision_parameters() -> None:
+    captured: list[request.Request] = []
+
+    def opener(req: request.Request, *, timeout: float) -> FakeResponse:
+        captured.append(req)
+        return FakeResponse({"ok": True})
+
+    assert run(
+        ["decision-evaluate", "--signal-id", "15", "--force"],
+        environ={"OPERATOR_AUTH_TOKEN": "operator-secret"},
+        opener=opener,
+        stdout=io.StringIO(),
+    ) == 0
+    assert run(
+        ["decision-recommendations", "--limit", "25"],
+        environ={"OPERATOR_AUTH_TOKEN": "operator-secret"},
+        opener=opener,
+        stdout=io.StringIO(),
+    ) == 0
+
+    evaluate_query = parse.parse_qs(parse.urlsplit(captured[0].full_url).query)
+    recommendations_query = parse.parse_qs(parse.urlsplit(captured[1].full_url).query)
+    assert evaluate_query == {"signal_id": ["15"], "force": ["True"]}
+    assert recommendations_query == {"limit": ["25"]}
+
+
+def test_traderctl_defaults_to_python3() -> None:
+    wrapper = Path("scripts/traderctl").read_text(encoding="utf-8")
+    assert 'exec "${PYTHON:-python3}" -m app.ops.cli "$@"' in wrapper
 
 
 def test_cli_http_error_is_nonzero_and_redacts_operator_token() -> None:

@@ -127,6 +127,9 @@ recommendations = Table(
     Column("signal_id", ForeignKey("signals.id"), nullable=False),
     Column("model_run_id", Integer, nullable=True),
     Column("verdict", String(50), nullable=False),
+    Column("confidence", Numeric(5, 4), nullable=False, server_default="0"),
+    Column("warnings", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    Column("evaluation_key", String(64), nullable=True, unique=True),
     Column("rationale", Text, nullable=True),
     Column("payload", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
@@ -216,6 +219,11 @@ model_runs = Table(
     Column("provider", String(100), nullable=False),
     Column("model_name", String(100), nullable=False),
     Column("request_id", String(100), nullable=True),
+    Column("adapter", String(50), nullable=False, server_default="fake"),
+    Column("prompt_version", String(50), nullable=False, server_default="p07_v1"),
+    Column("input_hash", String(64), nullable=False, server_default=""),
+    Column("latency_ms", Integer, nullable=True),
+    Column("error_code", String(100), nullable=True),
     Column("input_payload", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     Column("output_payload", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     Column("status", String(50), nullable=False),
@@ -250,6 +258,8 @@ Index("ix_broker_sessions_broker_created_at", broker_sessions.c.broker, broker_s
 Index("ix_orders_signal_simulated", orders.c.signal_id, orders.c.simulated)
 Index("ix_trades_signal_simulated", trades.c.signal_id, trades.c.simulated)
 Index("ix_universe_selection_runs_created_at", universe_selection_runs.c.created_at)
+Index("ix_model_runs_input_hash", model_runs.c.input_hash)
+Index("ix_recommendations_signal_created_at", recommendations.c.signal_id, recommendations.c.created_at)
 Index(
     "uq_trades_paper_signal_id",
     trades.c.signal_id,

@@ -31,6 +31,9 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "paper-report": ("GET", "/api/v1/paper/report"),
     "paper-trades": ("GET", "/api/v1/paper/trades"),
     "paper-replay": ("POST", "/api/v1/paper/run-replay"),
+    "decision-status": ("GET", "/api/v1/decision/status"),
+    "decision-evaluate": ("POST", "/api/v1/decision/evaluate"),
+    "decision-recommendations": ("GET", "/api/v1/decision/recommendations"),
 }
 
 
@@ -56,6 +59,11 @@ def build_parser() -> argparse.ArgumentParser:
             command_parser.add_argument("--symbol")
             command_parser.add_argument("--from", dest="from_time")
             command_parser.add_argument("--to", dest="to_time")
+            command_parser.add_argument("--limit", type=int)
+        elif command == "decision-evaluate":
+            command_parser.add_argument("--signal-id", type=int, required=True)
+            command_parser.add_argument("--force", action="store_true")
+        elif command == "decision-recommendations":
             command_parser.add_argument("--limit", type=int)
     return parser
 
@@ -133,14 +141,19 @@ def run(
 
 
 def _query_for(args: argparse.Namespace) -> dict[str, object]:
-    if args.command != "paper-replay":
+    if args.command == "paper-replay":
+        values = {
+            "symbol": args.symbol,
+            "from": args.from_time,
+            "to": args.to_time,
+            "limit": args.limit,
+        }
+    elif args.command == "decision-evaluate":
+        values = {"signal_id": args.signal_id, "force": args.force}
+    elif args.command == "decision-recommendations":
+        values = {"limit": args.limit}
+    else:
         return {}
-    values = {
-        "symbol": args.symbol,
-        "from": args.from_time,
-        "to": args.to_time,
-        "limit": args.limit,
-    }
     return {key: value for key, value in values.items() if value is not None}
 
 

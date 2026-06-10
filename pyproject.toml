@@ -14,6 +14,7 @@ dependencies = [
     "fastapi",
     "kiteconnect",
     "mypy",
+    "openai",
     "pydantic-settings",
     "pytest",
     "pytest-asyncio",

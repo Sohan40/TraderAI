@@ -13,6 +13,10 @@ from app.broker.token_cipher import TokenCipher
 from app.cache.redis import get_redis_client
 from app.core.config import settings
 from app.db.session import async_session_factory, get_session
+from app.decision.fake_adapter import FakeDecisionAdapter
+from app.decision.openai_adapter import OpenAIDecisionAdapter
+from app.decision.repository import SQLAlchemyDecisionRepository
+from app.decision.service import DecisionService
 from app.market_data.instrument_sync import InstrumentSyncService
 from app.market_data.kite_market_client import KiteConnectMarketClient
 from app.market_data.repository import (
@@ -313,4 +317,21 @@ async def get_paper_service(
     return PaperService(
         settings=settings,
         repository=SQLAlchemyPaperRepository(session),
+    )
+
+
+async def get_decision_service(
+    session: AsyncSession = Depends(get_session),
+) -> DecisionService:
+    """Build operator-triggered P07 decision evaluation."""
+    adapter_name = settings.openai_decision_adapter.strip().lower()
+    adapter = (
+        OpenAIDecisionAdapter(settings=settings)
+        if adapter_name == "openai"
+        else FakeDecisionAdapter()
+    )
+    return DecisionService(
+        settings=settings,
+        repository=SQLAlchemyDecisionRepository(session),
+        adapter=adapter,
     )

@@ -38,3 +38,6 @@ def test_operational_automation_defaults_remain_disabled() -> None:
     assert settings.market_ops_send_kite_login_link is False
     assert settings.market_ops_login_recovery_enabled is False
     assert settings.market_ops_autostart_enabled is False
+    assert settings.openai_decision_enabled is False
+    assert settings.openai_decision_adapter == "fake"
+    assert settings.openai_decision_store is False

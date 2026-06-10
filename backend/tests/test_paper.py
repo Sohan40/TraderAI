@@ -323,6 +323,33 @@ async def test_paper_report_and_trades_return_journal_fields() -> None:
     assert filled["entry_reference_price"] == "100.000000"
 
 
+@pytest.mark.asyncio
+async def test_paper_report_adds_read_only_decision_comparison_without_gating() -> None:
+    repo = InMemoryPaperRepository(
+        signals=[_candidate()],
+        candles_by_symbol={"NSE:SBIN": _target_bars()},
+        decisions_by_signal={
+            1: {
+                "recommendation_id": 7,
+                "verdict": "REJECT",
+                "confidence": 0.2,
+                "warnings": ["historical_context"],
+                "prompt_version": "p07_v1",
+            }
+        },
+    )
+    service = PaperService(settings=_settings(), repository=repo)
+
+    summary = await service.run_replay(symbol="NSE:SBIN")
+    report = await service.report()
+    outcomes = await service.trades()
+
+    assert summary.trades_created == 1
+    assert report["model_decision_coverage"] == 1
+    assert report["model_decision_verdict_counts"] == {"REJECT": 1}
+    assert outcomes[0]["model_decision"]["verdict"] == "REJECT"  # type: ignore[index]
+
+
 def test_paper_routes_require_operator_and_return_safe_status(monkeypatch) -> None:
     monkeypatch.setattr(dependencies.settings, "operator_auth_token", "operator-secret")
 

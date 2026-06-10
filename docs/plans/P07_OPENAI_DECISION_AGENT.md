@@ -40,9 +40,35 @@ Add an OpenAI decision layer that can approve/veto scanner candidates using only
 
 ## Acceptance criteria
 
-- Paper mode runs the model only on scanner candidates.
+- Operator-triggered evaluation runs only on persisted scanner candidates.
 - All outcomes are traceable to prompt version and input snapshot.
 - A model failure cannot cause an action.
+- Paper replay remains deterministic and unchanged; existing recommendations
+  appear only as read-only report comparison.
+
+## Operator validation
+
+P07 defaults to the deterministic fake adapter:
+
+```text
+OPENAI_DECISION_ENABLED=false
+OPENAI_DECISION_ADAPTER=fake
+OPENAI_DECISION_STORE=false
+```
+
+After explicitly enabling fake mode, evaluate a stored candidate:
+
+```text
+scripts/traderctl decision-status
+scripts/traderctl decision-evaluate --signal-id 15
+scripts/traderctl decision-recommendations --limit 20
+```
+
+For a deliberate real test, configure `OPENAI_DECISION_ADAPTER=openai`,
+`OPENAI_MODEL`, and `OPENAI_API_KEY` in an ignored runtime env file, then
+force-recreate the API outside market hours. `WATCH` or `REJECT` is acceptable
+for historical signal 15 because its stored quote/spread context is incomplete.
+The model is never called by market-ops and never starts paper replay.
 
 ## Codex prompt
 

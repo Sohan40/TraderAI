@@ -6,6 +6,12 @@ The model is not a market-data source and not an execution authority. It is a st
 
 ## Decision input schema
 
+The implementation uses persisted signal identity, the immutable
+`indicator_values`, `data_quality`, and `future_live_qualification` snapshots,
+plus paper/configured-limit context. Unknown feature keys and all secret,
+account, quantity, order, broker, environment, and external-data fields are
+discarded before hashing or prompting.
+
 ```json
 {
   "candidate_id": "uuid",
@@ -87,3 +93,12 @@ The application must:
 - store prompt version, input hash, model name, latency and parsed output;
 - send only eligible schema-valid output to the deterministic risk engine;
 - treat model failures as no-trade.
+
+P07 uses strict extra-field rejection and recursively rejects quantity, broker,
+order, credential, and risk-override fields. External-fact claims, insufficient
+data, non-allowlisted strategy templates, and low-confidence `ELIGIBLE` results
+become auditable safe `REJECT` recommendations.
+
+The Responses API request contains no tools. It uses structured parsing,
+bounded output tokens, configured timeout/retries, `tool_choice: none`, and
+`store: false` by default.

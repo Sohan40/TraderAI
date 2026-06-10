@@ -7,6 +7,7 @@ from fastapi import FastAPI
 
 from app.api import dependencies
 from app.api.routes import (
+    decision,
     health,
     kite_auth,
     market_data,
@@ -38,6 +39,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="Zerodha AI Trader API", lifespan=lifespan)
 app.include_router(health.router)
+app.include_router(decision.router)
 app.include_router(kite_auth.router)
 app.include_router(market_data.router)
 app.include_router(scanner.router)

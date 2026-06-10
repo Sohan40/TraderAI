@@ -95,6 +95,17 @@ python -m app.paper.replay --symbol NSE:SBIN --from 2026-06-03T03:45:00Z --to 20
 
 P06 never calls Kite, OpenAI, Kronos or MCP, and `LIVE` remains disabled/not implemented.
 
+## P07 Decision Validation
+
+P07 tests use fake adapters and injected Responses clients only. They verify
+strict output parsing, prohibited-field and external-claim rejection, failed-run
+audit persistence, signal/prompt/model idempotency, disabled defaults, and an
+OpenAI request with no tools and `store=false`.
+
+Paper regression tests must prove that an existing `REJECT` recommendation does
+not block or alter deterministic replay. Market-ops tests must continue proving
+there is no automatic decision or paper-replay trigger.
+
 ## Operational review after every live day
 
 - Did any order or exit differ from the approved instruction?

@@ -13,7 +13,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.analysis.indicators import IST
 from app.analysis.schemas import CompletedBar
-from app.models.schema import candles, instruments, journal_entries, order_events, orders, signals, trades
+from app.models.schema import (
+    candles,
+    instruments,
+    journal_entries,
+    model_runs,
+    order_events,
+    orders,
+    recommendations,
+    signals,
+    trades,
+)
 from app.paper.schemas import (
     PAPER_ENTRY_ATTEMPT_ENTRY_TYPE,
     PAPER_ENTRY_FILLED,
@@ -227,7 +237,57 @@ class SQLAlchemyPaperRepository:
             .order_by(desc(journal_entries.c.created_at), desc(journal_entries.c.id))
             .limit(limit)
         )
-        return [dict(row[0]) for row in result.all()]
+        outcomes = [dict(row[0]) for row in result.all()]
+        signal_ids = [
+            int(outcome["signal_id"])
+            for outcome in outcomes
+            if isinstance(outcome.get("signal_id"), int)
+        ]
+        comparisons = await self._latest_decisions(signal_ids)
+        for outcome in outcomes:
+            signal_id = outcome.get("signal_id")
+            if isinstance(signal_id, int):
+                outcome["model_decision"] = comparisons.get(signal_id)
+        return outcomes
+
+    async def _latest_decisions(
+        self,
+        signal_ids: list[int],
+    ) -> dict[int, dict[str, object]]:
+        if not signal_ids:
+            return {}
+        rows = (
+            await self._session.execute(
+                select(
+                    recommendations.c.signal_id,
+                    recommendations.c.id,
+                    recommendations.c.verdict,
+                    recommendations.c.confidence,
+                    recommendations.c.warnings,
+                    recommendations.c.created_at,
+                    model_runs.c.prompt_version,
+                )
+                .join(model_runs, recommendations.c.model_run_id == model_runs.c.id)
+                .where(recommendations.c.signal_id.in_(signal_ids))
+                .order_by(
+                    recommendations.c.signal_id,
+                    desc(recommendations.c.created_at),
+                    desc(recommendations.c.id),
+                )
+            )
+        ).mappings()
+        output: dict[int, dict[str, object]] = {}
+        for row in rows:
+            signal_id = int(row["signal_id"])
+            if signal_id not in output:
+                output[signal_id] = {
+                    "recommendation_id": int(row["id"]),
+                    "verdict": str(row["verdict"]),
+                    "confidence": float(row["confidence"]),
+                    "warnings": list(row["warnings"]),
+                    "prompt_version": str(row["prompt_version"]),
+                }
+        return output
 
     async def _insert_entry_order(
         self,
@@ -379,6 +439,7 @@ class InMemoryPaperRepository:
         *,
         signals: Sequence[PaperSignal] | None = None,
         candles_by_symbol: dict[str, list[CompletedBar]] | None = None,
+        decisions_by_signal: dict[int, dict[str, object]] | None = None,
     ) -> None:
         self.signals = list(signals or [])
         self.candles_by_symbol = candles_by_symbol or {}
@@ -386,6 +447,7 @@ class InMemoryPaperRepository:
         self.order_events: list[dict[str, object]] = []
         self.trades: list[dict[str, object]] = []
         self.journal: list[dict[str, object]] = []
+        self.decisions_by_signal = decisions_by_signal or {}
 
     async def load_candidate_signals(
         self,
@@ -508,7 +570,12 @@ class InMemoryPaperRepository:
         self.journal.append(payload)
 
     async def list_journal_outcomes(self, *, limit: int) -> list[dict[str, object]]:
-        return list(reversed(self.journal[-limit:]))
+        outcomes = [dict(item) for item in reversed(self.journal[-limit:])]
+        for outcome in outcomes:
+            signal_id = outcome.get("signal_id")
+            if isinstance(signal_id, int):
+                outcome["model_decision"] = self.decisions_by_signal.get(signal_id)
+        return outcomes
 
 
 def _paper_signal_from_row(row: Any) -> PaperSignal:

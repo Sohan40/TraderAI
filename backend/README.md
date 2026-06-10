@@ -21,4 +21,10 @@ existing readiness, read-only stream, universe, and scanner services only.
 
 P06 adds a disabled-by-default deterministic paper engine and journal. It consumes persisted P05 `CANDIDATE` records, simulates long-only limit entries, stop/target/time/force-flat exits over completed one-minute candles, and stores clearly simulated order/event/trade/journal rows.
 
-Live trading remains impossible: there are no OpenAI calls, no real broker order gateway, and `LIVE` paper mode raises a disabled/not-implemented error.
+P07 adds disabled-by-default, operator-triggered structured decision evaluation
+with fake and OpenAI Responses API adapters. It stores model runs and
+recommendations only. Existing verdicts may appear in paper reports but never
+gate or trigger replay.
+
+Live trading remains impossible: there is no real broker order gateway, and
+`LIVE` paper mode raises a disabled/not-implemented error.

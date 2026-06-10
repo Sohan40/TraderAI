@@ -116,6 +116,13 @@ and never mutates the market-data watchlist.
 
 P06 adds deterministic paper replay only. The paper engine is disabled by default, consumes only persisted P05 `CANDIDATE` signals, ignores `REJECTED_SIGNAL`, simulates long-only limit entries and exits from completed one-minute candles, and stores simulated order/event/trade/journal rows. `OFF` and `SHADOW` create no paper orders or fills. `LIVE` raises an explicit disabled/not-implemented error; no real execution gateway is introduced.
 
+P07 adds operator-triggered structured decision evaluation only. It consumes
+persisted P05 candidates, sends a sanitized immutable snapshot to either a
+deterministic fake adapter or the OpenAI Responses API, and stores model runs
+plus recommendations. It has no tools, retrieval, quantity, risk, broker,
+market-ops, or execution authority. P06 may display existing verdicts in
+reports, but replay behavior is unchanged.
+
 ### Static-IP/execution isolation
 
 Only the Execution Gateway needs authority to call live order endpoints. In future, scanners or dashboards can move elsewhere, but live order outbound traffic remains on the VM with the registered static IP.
