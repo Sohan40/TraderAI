@@ -19,6 +19,7 @@ from app.scanners.exceptions import (
     ScannerInputError,
 )
 from app.scanners.service import ScannerService
+from app.universe.exceptions import SelectedUniverseMissingError
 
 router = APIRouter(
     prefix="/api/v1/scanner",
@@ -64,6 +65,7 @@ async def scanner_run_batch(
     timeframe: str = Query(default="1minute"),
     store_rejections: bool = Query(default=True),
     dry_run: bool = Query(default=False),
+    use_latest_universe: bool = Query(default=False),
     service: ScannerService = Depends(get_scanner_service),
 ) -> dict[str, object]:
     """Scan configured or explicit symbols using stored completed candles."""
@@ -73,11 +75,14 @@ async def scanner_run_batch(
             timeframe=timeframe,
             store_rejections=store_rejections,
             dry_run=dry_run,
+            use_latest_universe=use_latest_universe,
         )
     except ScannerDisabledError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="scanner disabled") from exc
     except ScannerInputError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except SelectedUniverseMissingError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ScannerConfigError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

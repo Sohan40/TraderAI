@@ -108,6 +108,12 @@ session metadata, and process status only. Scanner batch and auto-loop paths use
 completed stored candles and immutable signal persistence only. The auto loop is
 disabled by default and has no application-start hook.
 
+P05.8 adds a deterministic universe selector before the scanner. It validates a
+configured NSE pool against local instruments, excludes symbols without adequate
+stored candles, ranks eligible symbols with transparent technical metrics, and
+persists compact run summaries. It has no external-data or execution authority
+and never mutates the market-data watchlist.
+
 P06 adds deterministic paper replay only. The paper engine is disabled by default, consumes only persisted P05 `CANDIDATE` signals, ignores `REJECTED_SIGNAL`, simulates long-only limit entries and exits from completed one-minute candles, and stores simulated order/event/trade/journal rows. `OFF` and `SHADOW` create no paper orders or fills. `LIVE` raises an explicit disabled/not-implemented error; no real execution gateway is introduced.
 
 ### Static-IP/execution isolation

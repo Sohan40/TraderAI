@@ -16,6 +16,7 @@ def test_initial_storage_schema_contains_p01_tables() -> None:
         "journal_entries",
         "model_runs",
         "broker_sessions",
+        "universe_selection_runs",
     }
 
     assert expected_tables.issubset(metadata.tables)

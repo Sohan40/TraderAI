@@ -64,6 +64,13 @@ persistence, disabled rejection persistence by default, and disabled auto-loop
 defaults. The detailed operator sequence is in
 `docs/WATCHLIST_AND_SCANNER_OPERATIONS.md`.
 
+## P05.8 Universe Validation
+
+Universe tests must prove deterministic ranking, explicit exclusions for
+missing or inadequate data, dry-run persistence behavior, compact run retrieval,
+and disabled-by-default scanner integration. A configured pool is not considered
+rankable until completed local candles exist.
+
 ## P06 Paper Validation
 
 P06 paper replay is disabled by default with `PAPER_ENABLED=false` and `PAPER_MODE=OFF`. In `PAPER` mode it consumes only persisted P05 `CANDIDATE` signals and completed `1minute` candles. Entry is a simulated long-only limit buy; stop and target are checked on later candles, with stop winning if both stop and target touch in the same candle. If the replay reaches the configured force-flat time, default `15:10` IST, the trade exits at that candle close. If data ends earlier, the trade exits at the last later candle close with `TIME_EXIT`, or records `DATA_ENDED` if no later candle exists.

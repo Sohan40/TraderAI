@@ -81,6 +81,8 @@ Kite data is **not** a replacement for company-news or corporate-event research.
 - P05.5-P05.7 add operator-only watchlist validation, local stream readiness,
   multi-symbol scanner batches, a disabled-by-default scanner auto loop, and a
   morning-readiness report. See `docs/WATCHLIST_AND_SCANNER_OPERATIONS.md`.
+- P05.8 adds disabled-by-default deterministic universe ranking over locally
+  stored completed candles. See `docs/DYNAMIC_UNIVERSE_SELECTION.md`.
 - P06 adds disabled-by-default deterministic paper trading and journal/replay outputs over P05 candidates and stored completed candles only.
 - Live trading remains disabled by default with `TRADING_MODE=OFF` and `LIVE_ARMED=false`.
 - OpenAI, risk-engine, live execution and dashboard implementation phases have not started.

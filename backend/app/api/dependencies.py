@@ -28,6 +28,11 @@ from app.paper.service import PaperService
 from app.scanners.auto_loop import ScannerAutoLoopService
 from app.scanners.repository import SQLAlchemyScannerRepository, SessionFactoryScannerRepository
 from app.scanners.service import ScannerService
+from app.universe.repository import (
+    SQLAlchemyUniverseRepository,
+    SessionFactoryUniverseRepository,
+)
+from app.universe.service import UniverseSelectionService
 
 _market_data_stream_service: MarketDataStreamService | None = None
 _scanner_auto_loop_service: ScannerAutoLoopService | None = None
@@ -147,9 +152,14 @@ async def get_scanner_service(
     session: AsyncSession = Depends(get_session),
 ) -> ScannerService:
     """Build the operator-triggered P05 scanner service."""
+    universe_service = UniverseSelectionService(
+        settings=settings,
+        repository=SQLAlchemyUniverseRepository(session),
+    )
     return ScannerService(
         settings=settings,
         repository=SQLAlchemyScannerRepository(session),
+        latest_universe_provider=universe_service,
     )
 
 
@@ -157,14 +167,29 @@ async def get_scanner_auto_loop_service() -> ScannerAutoLoopService:
     """Return the process-local disabled-by-default scanner scheduler."""
     global _scanner_auto_loop_service
     if _scanner_auto_loop_service is None:
+        universe_service = UniverseSelectionService(
+            settings=settings,
+            repository=SessionFactoryUniverseRepository(async_session_factory),
+        )
         _scanner_auto_loop_service = ScannerAutoLoopService(
             settings=settings,
             scanner_service=ScannerService(
                 settings=settings,
                 repository=SessionFactoryScannerRepository(async_session_factory),
+                latest_universe_provider=universe_service,
             ),
         )
     return _scanner_auto_loop_service
+
+
+async def get_universe_selection_service(
+    session: AsyncSession = Depends(get_session),
+) -> UniverseSelectionService:
+    """Build deterministic local-data universe selection."""
+    return UniverseSelectionService(
+        settings=settings,
+        repository=SQLAlchemyUniverseRepository(session),
+    )
 
 
 async def get_morning_readiness_service(
@@ -193,6 +218,10 @@ async def get_morning_readiness_service(
             repository=SQLAlchemyScannerRepository(session),
         ),
         auto_loop_service=auto_loop_service,
+        universe_service=UniverseSelectionService(
+            settings=settings,
+            repository=SQLAlchemyUniverseRepository(session),
+        ),
     )
 
 

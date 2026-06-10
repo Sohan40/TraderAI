@@ -222,6 +222,26 @@ model_runs = Table(
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
 )
 
+universe_selection_runs = Table(
+    "universe_selection_runs",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("run_id", String(64), nullable=False, unique=True),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("started_at", DateTime(timezone=True), nullable=False),
+    Column("finished_at", DateTime(timezone=True), nullable=False),
+    Column("timeframe", String(20), nullable=False),
+    Column("pool_count", Integer, nullable=False),
+    Column("scored_count", Integer, nullable=False),
+    Column("selected_count", Integer, nullable=False),
+    Column("selected_symbols", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    Column("ranked_symbols", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    Column("excluded_symbols", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    Column("config_snapshot", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column("warnings", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    Column("errors", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+)
+
 Index("ix_candles_instrument_timeframe_started", candles.c.instrument_id, candles.c.timeframe, candles.c.started_at)
 Index("ix_signals_instrument_signal_time", signals.c.instrument_id, signals.c.signal_time)
 Index("ix_signals_status_created_at", signals.c.signal_status, signals.c.created_at)
@@ -229,6 +249,7 @@ Index("ix_journal_entries_created_at", journal_entries.c.created_at)
 Index("ix_broker_sessions_broker_created_at", broker_sessions.c.broker, broker_sessions.c.created_at)
 Index("ix_orders_signal_simulated", orders.c.signal_id, orders.c.simulated)
 Index("ix_trades_signal_simulated", trades.c.signal_id, trades.c.simulated)
+Index("ix_universe_selection_runs_created_at", universe_selection_runs.c.created_at)
 Index(
     "uq_trades_paper_signal_id",
     trades.c.signal_id,

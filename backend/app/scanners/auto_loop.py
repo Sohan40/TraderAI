@@ -17,6 +17,7 @@ from app.scanners.exceptions import (
     ScannerDisabledError,
 )
 from app.scanners.service import ScannerService
+from app.universe.exceptions import SelectedUniverseMissingError
 
 
 class ScannerAutoLoopService:
@@ -97,12 +98,34 @@ class ScannerAutoLoopService:
                     min_candles=self._settings.scanner_auto_loop_min_candles,
                     require_session_start=self._settings.scanner_auto_loop_require_session_start,
                     require_continuity=self._settings.scanner_auto_loop_require_continuity,
+                    use_latest_universe=(
+                        self._settings.scanner_auto_loop_use_selected_universe
+                    ),
                 )
                 summary = batch.as_dict()
                 summary["skipped"] = False
                 self._last_summary = summary
                 self._last_error = None
                 self._last_run_at = self._normalized_now()
+                return summary
+            except SelectedUniverseMissingError:
+                summary = {
+                    "skipped": True,
+                    "skip_reason": "selected_universe_missing",
+                    "evaluated_symbols": 0,
+                    "total_evaluated": 0,
+                    "total_inserted": 0,
+                    "total_candidates": 0,
+                    "total_rejected": 0,
+                    "per_symbol": [],
+                    "errors": {},
+                    "started_at": now.isoformat(),
+                    "finished_at": now.isoformat(),
+                    "duration_ms": 0,
+                }
+                self._last_summary = summary
+                self._last_error = "selected_universe_missing"
+                self._last_run_at = now
                 return summary
             except Exception:
                 self._last_error = "scanner_auto_loop_run_failed"
@@ -133,6 +156,9 @@ class ScannerAutoLoopService:
             "candidates_always_persist": (
                 self._settings.scanner_auto_loop_candidates_always_persist
             ),
+            "use_selected_universe": (
+                self._settings.scanner_auto_loop_use_selected_universe
+            ),
         }
 
     async def _loop(self) -> None:
@@ -161,6 +187,8 @@ class ScannerAutoLoopService:
             raise ScannerConfigError("Auto-loop candidates must always persist.")
 
     def _configured_symbols_or_none(self) -> list[str] | None:
+        if self._settings.scanner_auto_loop_use_selected_universe:
+            return None
         configured = [
             item.strip()
             for item in self._settings.scanner_auto_loop_symbols.split(",")

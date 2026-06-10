@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from typing import Protocol
 
 from app.analysis.feature_builder import build_feature_input
 from app.analysis.indicators import IST, NSE_OPEN, candle_continuity_ok
@@ -24,9 +25,14 @@ from app.scanners.schemas import (
     ScannerSymbolResult,
 )
 from app.scanners.strategies import evaluate_strategy
+from app.universe.exceptions import SelectedUniverseMissingError
 
 SCANNER_HISTORY_BAR_LIMIT = 800
 SCANNER_REPLAY_BAR_LIMIT = 100_000
+
+
+class LatestUniverseProvider(Protocol):
+    async def latest_selected_symbols(self) -> list[str] | None: ...
 
 
 class ScannerService:
@@ -38,11 +44,13 @@ class ScannerService:
         settings: Settings,
         repository: ScannerRepository,
         now_provider: Callable[[], datetime] | None = None,
+        latest_universe_provider: LatestUniverseProvider | None = None,
     ) -> None:
         self._settings = settings
         self._repository = repository
         self._config = scanner_config_from_settings(settings)
         self._now_provider = now_provider or (lambda: datetime.now(timezone.utc))
+        self._latest_universe_provider = latest_universe_provider
 
     async def status(self) -> dict[str, object]:
         return {
@@ -50,6 +58,9 @@ class ScannerService:
             "observation_mode": self._config.observation_mode,
             "strategies": self._config.strategies,
             "auto_loop": self._settings.scanner_auto_loop_enabled,
+            "use_latest_universe_default": (
+                self._settings.universe_selection_use_latest_for_scanner_batch
+            ),
         }
 
     async def run_once(
@@ -99,14 +110,30 @@ class ScannerService:
         min_candles: int = 0,
         require_session_start: bool = False,
         require_continuity: bool = False,
+        use_latest_universe: bool = False,
     ) -> ScannerBatchResult:
         """Scan multiple symbols over stored completed candles only."""
         self._validate_timeframe(timeframe)
         if not self._config.enabled:
             raise ScannerDisabledError("Scanner is disabled.")
-        selected = symbols or [
-            item.key for item in strict_configured_watchlist(self._settings)
-        ]
+        use_selected = (
+            use_latest_universe
+            or self._settings.universe_selection_use_latest_for_scanner_batch
+        )
+        if symbols is not None and use_selected:
+            raise ScannerInputError(
+                "Explicit symbols cannot be combined with selected universe."
+            )
+        if use_selected:
+            if self._latest_universe_provider is None:
+                raise SelectedUniverseMissingError("Selected universe missing.")
+            selected = await self._latest_universe_provider.latest_selected_symbols()
+            if not selected:
+                raise SelectedUniverseMissingError("Selected universe missing.")
+        else:
+            selected = symbols or [
+                item.key for item in strict_configured_watchlist(self._settings)
+            ]
         normalized = _normalize_symbols(selected)
         limit = max_symbols or self._settings.market_data_max_instruments
         if limit < 1 or len(normalized) > limit:

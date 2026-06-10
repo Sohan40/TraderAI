@@ -86,6 +86,16 @@ rejections unless `store_rejections=false`. `dry_run=true` evaluates without
 inserting signals. One-symbol failures are reported without stopping the rest
 of the batch.
 
+P05.8 can provide a latest selected universe. Manual batch uses it only when
+`use_latest_universe=true` or its separate default setting is explicitly
+enabled. Auto-loop uses it only when
+`SCANNER_AUTO_LOOP_USE_SELECTED_UNIVERSE=true`. Missing selection data fails or
+skips clearly; it never silently changes `MARKET_DATA_WATCHLIST`.
+
+Keep the static watchlist as the default until enough local candles exist for
+selection. A larger universe pool alone does not make symbols rankable because
+P05.8 performs no historical backfill and no automatic stream subscription.
+
 The auto loop is disabled by default. It must be explicitly enabled in config
 and explicitly started through the operator route. `run-now` follows the same
 strict enabled flag. The loop:

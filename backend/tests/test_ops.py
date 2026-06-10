@@ -24,6 +24,7 @@ from app.ops.morning_readiness import MorningReadinessService
 from app.scanners.auto_loop import ScannerAutoLoopService
 from app.scanners.repository import InMemoryScannerRepository
 from app.scanners.service import ScannerService
+from app.universe.service import UniverseSelectionService
 
 
 class LocalMarketRepository:
@@ -157,6 +158,80 @@ async def test_morning_readiness_is_ready_when_all_local_gates_pass() -> None:
     assert result["blocking_issues"] == []
 
 
+async def test_universe_disabled_does_not_block_morning_readiness() -> None:
+    service = _morning_service(
+        settings=_settings(universe_selection_enabled=False),
+        repository=LocalMarketRepository([_sbin()]),
+        session_record=_active_session(),
+        stream=LocalStreamStatus(running=True, connected=True),
+        universe_status={
+            "enabled": False,
+            "pool_valid": True,
+            "latest_run_at": None,
+            "latest_selected_count": 0,
+            "latest_selected_symbols": [],
+        },
+    )
+
+    result = await service.readiness()
+
+    assert result["ready_for_market_open"] is True
+    assert "universe_selection_has_no_latest_run" not in cast(
+        list[str],
+        result["warnings"],
+    )
+
+
+async def test_universe_enabled_without_latest_run_warns_and_recommends_action() -> None:
+    service = _morning_service(
+        settings=_settings(universe_selection_enabled=True),
+        repository=LocalMarketRepository([_sbin()]),
+        session_record=_active_session(),
+        stream=LocalStreamStatus(running=True, connected=True),
+        universe_status={
+            "enabled": True,
+            "pool_valid": True,
+            "latest_run_at": None,
+            "latest_selected_count": 0,
+            "latest_selected_symbols": [],
+        },
+    )
+
+    result = await service.readiness()
+
+    assert "universe_selection_has_no_latest_run" in cast(list[str], result["warnings"])
+    assert "run_universe_selection_after_data_available" in cast(
+        list[str],
+        result["recommended_sequence"],
+    )
+
+
+async def test_auto_loop_selected_universe_without_latest_is_blocking() -> None:
+    service = _morning_service(
+        settings=_settings(
+            universe_selection_enabled=True,
+            scanner_auto_loop_use_selected_universe=True,
+        ),
+        repository=LocalMarketRepository([_sbin()]),
+        session_record=_active_session(),
+        stream=LocalStreamStatus(running=True, connected=True),
+        universe_status={
+            "enabled": True,
+            "pool_valid": True,
+            "latest_run_at": None,
+            "latest_selected_count": 0,
+            "latest_selected_symbols": [],
+        },
+    )
+
+    result = await service.readiness()
+
+    assert "scanner_auto_loop_selected_universe_missing" in cast(
+        list[str],
+        result["blocking_issues"],
+    )
+
+
 def test_morning_readiness_route_requires_operator_token_and_returns_safe_report(
     monkeypatch,
 ) -> None:
@@ -195,6 +270,7 @@ def _morning_service(
     repository: LocalMarketRepository,
     session_record: BrokerSessionRecord | None,
     stream: LocalStreamStatus,
+    universe_status: dict[str, object] | None = None,
 ) -> MorningReadinessService:
     watchlist = WatchlistValidationService(settings=settings, repository=repository)
     stream_readiness = StreamReadinessService(
@@ -211,12 +287,18 @@ def _morning_service(
         settings=settings,
         scanner_service=scanner,
     )
+    universe_service = (
+        cast(UniverseSelectionService, _UniverseStatus(universe_status))
+        if universe_status is not None
+        else None
+    )
     return MorningReadinessService(
         settings=settings,
         watchlist_service=watchlist,
         stream_readiness_service=stream_readiness,
         scanner_service=scanner,
         auto_loop_service=auto_loop,
+        universe_service=universe_service,
     )
 
 
@@ -261,3 +343,11 @@ def _active_session() -> BrokerSessionRecord:
         encrypted_access_token="encrypted",
         invalidated_at=None,
     )
+
+
+class _UniverseStatus:
+    def __init__(self, status: dict[str, object]) -> None:
+        self._status = status
+
+    async def status(self) -> dict[str, object]:
+        return self._status
