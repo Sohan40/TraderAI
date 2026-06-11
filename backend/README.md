@@ -19,6 +19,11 @@ P05.9 adds a disabled-by-default process-local market-operations scheduler,
 operator one-shot controls, and optional Telegram notifications. It coordinates
 existing readiness, read-only stream, universe, and scanner services only.
 
+P05.11 adds a disabled-by-default private Telegram long-polling bot with static
+allowlisted callbacks for the same safe operator services. It accepts only the
+configured private chat/user, rate-limits actions, confirms stop operations,
+and has no shell, Docker, API-restart, paper-replay, or order capability.
+
 P06 adds a disabled-by-default deterministic paper engine and journal. It consumes persisted P05 `CANDIDATE` records, simulates long-only limit entries, stop/target/time/force-flat exits over completed one-minute candles, and stores clearly simulated order/event/trade/journal rows.
 
 P07 adds disabled-by-default, operator-triggered structured decision evaluation

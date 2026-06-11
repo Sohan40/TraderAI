@@ -79,6 +79,12 @@ real network request. Scheduler tests must start and stop cleanly, prevent
 overlap, execute due jobs once per slot, contain failed jobs, and leave no
 background task running after the test.
 
+Interactive Telegram tests must use fake Telegram transports and verify private
+chat/user authorization, menu callbacks, rate limiting, confirmation, fresh
+login-link generation, idempotent stream start, scheduler lock reuse, clean
+poller cancellation, and absence of shell, Docker socket, API restart, paper
+replay, and execution capabilities.
+
 Validate operator routes, disabled defaults, notification level filtering,
 message truncation, secret-free status, and the absence of broker-order, paper
 replay, OpenAI, news, fundamentals, Kronos, or MCP paths.

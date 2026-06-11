@@ -34,6 +34,8 @@ from app.ops.morning_readiness import MorningReadinessService
 from app.ops.market_ops import MarketOpsOrchestrator
 from app.ops.market_ops_scheduler import MarketOpsScheduler
 from app.ops.notifier import Notifier
+from app.ops.telegram_actions import TelegramActionService
+from app.ops.telegram_bot import TelegramInteractiveBot
 from app.paper.repository import SQLAlchemyPaperRepository
 from app.paper.service import PaperService
 from app.scanners.auto_loop import ScannerAutoLoopService
@@ -51,6 +53,7 @@ _market_ops_notifier: Notifier | None = None
 _market_ops_orchestrator: MarketOpsOrchestrator | None = None
 _market_ops_scheduler: MarketOpsScheduler | None = None
 _decision_automation_service: DecisionAutomationService | None = None
+_telegram_interactive_bot: TelegramInteractiveBot | None = None
 
 
 def require_operator_token(x_operator_token: str | None = Header(default=None)) -> None:
@@ -361,3 +364,35 @@ async def get_decision_automation_service() -> DecisionAutomationService:
             notifier=await get_notifier(),
         )
     return _decision_automation_service
+
+
+async def get_telegram_interactive_bot() -> TelegramInteractiveBot:
+    """Return the disabled-by-default process-local Telegram poller."""
+    global _telegram_interactive_bot
+    if _telegram_interactive_bot is None:
+        repository = SessionFactoryDecisionRepository(async_session_factory)
+        _telegram_interactive_bot = TelegramInteractiveBot(
+            settings=settings,
+            actions=TelegramActionService(
+                settings=settings,
+                kite_service=KiteAuthService(
+                    settings=settings,
+                    kite_client=KiteConnectAuthClient(
+                        api_key=settings.kite_api_key,
+                        api_secret=settings.kite_api_secret,
+                    ),
+                    session_store=SessionFactorySessionStore(async_session_factory),
+                    state_store=RedisStateStore(get_redis_client()),
+                    token_cipher=_build_token_cipher(),
+                ),
+                stream_service=await get_market_data_stream_service(),
+                scheduler=await get_market_ops_scheduler(),
+                decision_service=DecisionService(
+                    settings=settings,
+                    repository=repository,
+                    adapter=_build_decision_adapter(),
+                ),
+                decision_automation=await get_decision_automation_service(),
+            ),
+        )
+    return _telegram_interactive_bot

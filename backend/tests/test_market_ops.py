@@ -13,6 +13,7 @@ from app.api import dependencies
 from app.api.dependencies import (
     get_market_ops_orchestrator,
     get_market_ops_scheduler,
+    get_telegram_interactive_bot,
 )
 from app.core.config import Settings
 from app.main import app
@@ -899,6 +900,42 @@ async def test_app_lifespan_autostarts_only_when_both_flags_enabled(monkeypatch)
     assert scheduler.stops == 1
 
 
+@pytest.mark.asyncio
+async def test_app_lifespan_starts_and_stops_interactive_bot_only_when_enabled(
+    monkeypatch,
+) -> None:
+    class LifespanBot:
+        def __init__(self) -> None:
+            self.starts = 0
+            self.stops = 0
+
+        async def start(self) -> dict[str, object]:
+            self.starts += 1
+            return {}
+
+        async def stop(self) -> dict[str, object]:
+            self.stops += 1
+            return {}
+
+    bot = LifespanBot()
+
+    async def provider() -> LifespanBot:
+        return bot
+
+    monkeypatch.setattr(dependencies, "get_telegram_interactive_bot", provider)
+    monkeypatch.setattr(dependencies.settings, "market_ops_autostart_enabled", False)
+    monkeypatch.setattr(dependencies.settings, "market_ops_telegram_interactive_enabled", False)
+    async with app_lifespan(app):
+        pass
+    assert bot.starts == 0
+
+    monkeypatch.setattr(dependencies.settings, "market_ops_telegram_interactive_enabled", True)
+    async with app_lifespan(app):
+        pass
+    assert bot.starts == 1
+    assert bot.stops == 1
+
+
 def test_market_ops_routes_require_token_and_dispatch(monkeypatch) -> None:
     monkeypatch.setattr(dependencies.settings, "operator_auth_token", "operator-secret")
 
@@ -919,8 +956,13 @@ def test_market_ops_routes_require_token_and_dispatch(monkeypatch) -> None:
         async def test_notification(self) -> dict[str, object]:
             return {"ok": True, "event": "market_ops_test_notification"}
 
+    class RouteTelegramBot:
+        def status(self) -> dict[str, object]:
+            return {"enabled": False, "running": False}
+
     app.dependency_overrides[get_market_ops_scheduler] = lambda: RouteScheduler()
     app.dependency_overrides[get_market_ops_orchestrator] = lambda: RouteOps()
+    app.dependency_overrides[get_telegram_interactive_bot] = lambda: RouteTelegramBot()
     routes = [
         "/api/v1/ops/market-ops/run-preopen-check",
         "/api/v1/ops/market-ops/run-start-stream",
@@ -933,6 +975,7 @@ def test_market_ops_routes_require_token_and_dispatch(monkeypatch) -> None:
     try:
         client = TestClient(app)
         assert client.get("/api/v1/ops/market-ops/status").status_code == 401
+        assert client.get("/api/v1/ops/market-ops/telegram-bot/status").status_code == 401
         started = client.post(
             "/api/v1/ops/market-ops/start",
             headers={"X-Operator-Token": "operator-secret"},
@@ -943,6 +986,11 @@ def test_market_ops_routes_require_token_and_dispatch(monkeypatch) -> None:
         )
         assert started.json()["running"] is True
         assert stopped.json()["running"] is False
+        bot_status = client.get(
+            "/api/v1/ops/market-ops/telegram-bot/status",
+            headers={"X-Operator-Token": "operator-secret"},
+        )
+        assert bot_status.json() == {"enabled": False, "running": False}
         for route in routes:
             response = client.post(route, headers={"X-Operator-Token": "operator-secret"})
             assert response.status_code == 200
@@ -1000,11 +1048,13 @@ def test_market_ops_defaults_and_safety_boundaries() -> None:
     assert settings.market_ops_send_kite_login_link is False
     assert settings.market_ops_login_recovery_enabled is False
     assert settings.market_ops_autostart_enabled is False
+    assert settings.market_ops_telegram_interactive_enabled is False
     assert settings.market_ops_decision_auto_evaluate_enabled is False
     assert settings.paper_enabled is False
     assert settings.paper_mode == "OFF"
     assert 'TRADING_MODE: "OFF"' in compose
     assert 'LIVE_ARMED: "false"' in compose
+    assert 'MARKET_OPS_TELEGRAM_INTERACTIVE_ENABLED: "${MARKET_OPS_TELEGRAM_INTERACTIVE_ENABLED:-false}"' in compose
     assert "paper.replay" not in sources
     assert "paper.run" not in sources
     assert "place_order" not in sources

@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.api.dependencies import (
     get_market_ops_orchestrator,
     get_market_ops_scheduler,
+    get_telegram_interactive_bot,
     require_operator_token,
 )
 from app.ops.market_ops import MarketOpsOrchestrator
@@ -15,6 +16,7 @@ from app.ops.market_ops_scheduler import (
     MarketOpsJobBusyError,
     MarketOpsScheduler,
 )
+from app.ops.telegram_bot import TelegramInteractiveBot
 
 router = APIRouter(
     prefix="/api/v1/ops/market-ops",
@@ -101,3 +103,10 @@ async def market_ops_test_notification(
     orchestrator: MarketOpsOrchestrator = Depends(get_market_ops_orchestrator),
 ) -> dict[str, object]:
     return await orchestrator.test_notification()
+
+
+@router.get("/telegram-bot/status")
+async def telegram_bot_status(
+    bot: TelegramInteractiveBot = Depends(get_telegram_interactive_bot),
+) -> dict[str, object]:
+    return bot.status()

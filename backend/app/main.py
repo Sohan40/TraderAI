@@ -27,12 +27,18 @@ configure_logging(settings.log_level)
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Optionally start one process-local scheduler and always stop it cleanly."""
     scheduler = None
+    telegram_bot = None
     if settings.market_ops_autostart_enabled and settings.market_ops_automation_enabled:
         scheduler = await dependencies.get_market_ops_scheduler()
         await scheduler.start()
+    if settings.market_ops_telegram_interactive_enabled:
+        telegram_bot = await dependencies.get_telegram_interactive_bot()
+        await telegram_bot.start()
     try:
         yield
     finally:
+        if telegram_bot is not None:
+            await telegram_bot.stop()
         if scheduler is not None:
             await scheduler.stop()
 

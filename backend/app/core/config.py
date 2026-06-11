@@ -84,6 +84,12 @@ class Settings(BaseSettings):
     market_ops_telegram_bot_token: str = ""
     market_ops_telegram_chat_id: str = ""
     market_ops_notify_min_level: str = "warning"
+    market_ops_telegram_interactive_enabled: bool = False
+    market_ops_telegram_interactive_poll_seconds: float = 2
+    market_ops_telegram_interactive_allowed_chat_id: str = ""
+    market_ops_telegram_interactive_allowed_user_id: str = ""
+    market_ops_telegram_interactive_max_actions_per_minute: int = 10
+    market_ops_telegram_interactive_require_confirmation: bool = True
     market_ops_send_kite_login_link: bool = False
     market_ops_login_recovery_enabled: bool = False
     market_ops_login_recovery_start_ist: str = "09:00"

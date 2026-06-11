@@ -289,3 +289,64 @@ or trading safety settings.
   universe exists when selected-universe mode is configured.
 
 P06 paper replay remains a separate, deliberate after-market operator action.
+
+## Interactive Telegram Bot
+
+P05.11 adds an optional private long-polling Telegram operator bot. It is
+disabled by default and requires:
+
+```text
+MARKET_OPS_TELEGRAM_INTERACTIVE_ENABLED=true
+MARKET_OPS_NOTIFY_PROVIDER=telegram
+MARKET_OPS_TELEGRAM_BOT_TOKEN=...
+MARKET_OPS_TELEGRAM_INTERACTIVE_ALLOWED_CHAT_ID=...
+MARKET_OPS_TELEGRAM_INTERACTIVE_ALLOWED_USER_ID=...
+```
+
+Read the private human chat ID and user ID from a Telegram `getUpdates`
+response after sending `/start` to the bot. Group chats, unknown chats, unknown
+users, unknown callback actions, and over-limit actions are ignored or rejected.
+The bot uses long polling and does not expose a webhook through Caddy.
+
+`/start` and `/menu` show allowlisted buttons for:
+
+- fresh Kite login link and non-sensitive Kite status;
+- stream status, safe start, verify, stop, and emergency stop;
+- scheduler status, start, and stop;
+- preopen, universe-selection, and scanner jobs;
+- P07 status, P07 auto status, and bounded latest-candidate evaluation;
+- help.
+
+Stop actions require confirmation by default. Start Stream always calls the
+existing `MarketOpsScheduler.run_job("stream_start")` path. If another job is
+running it returns `job already running`; if the stream is already connected it
+returns `already running and connected`; if running but disconnected it
+suggests Verify Stream or Stop/Start. It never creates a duplicate WebSocket,
+changes scheduler completed slots, reschedules future jobs, or bypasses
+readiness gates.
+
+Fresh Kite Login Link creates new callback state through the existing
+authentication service. Use it when an older Telegram link reports an invalid
+callback. The URL is sent only to the allowed private chat and is not persisted
+or included in bot status.
+
+The Telegram bot cannot place orders, run paper replay, execute shell commands,
+access a Docker socket, or restart the API. API restart is intentionally not
+available from Telegram. For a manual VM process restart with unchanged
+environment:
+
+```text
+docker compose --env-file infra/gcp/env.prod -f infra/gcp/docker-compose.prod.yml restart api
+```
+
+That command does not reload changed environment values. After environment
+changes, continue using the documented `up -d --force-recreate api` command.
+
+Operator-only bot status is available at:
+
+```text
+GET /api/v1/ops/market-ops/telegram-bot/status
+```
+
+Polling offset and rate-limit state are process-local. On startup the bot
+discards pending historical updates before processing new ones.
